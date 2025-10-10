@@ -1,6 +1,6 @@
 import os
 import sys
-
+import matplotlib.pyplot as plt
 import argparse
 import logging
 import time
@@ -18,7 +18,7 @@ from networks.vnet import VNet
 from dataloaders import utils
 from utils import ramps, losses
 from dataloaders.lung import Lung, TwoStreamBatchSampler
-from monai.transforms import (Compose, RandSpatialCropd)
+from monai.transforms import (Compose, RandSpatialCropd, RandCropByLabelClassesd)
 from utils.test_3d_patch import test_all_case_Lung
 
 parser = argparse.ArgumentParser()
@@ -40,7 +40,7 @@ args = parser.parse_args()
 
 train_data_path = args.root_path
 snapshot_path = "./model/" + args.exp + "/"
-
+fig_path = Path(snapshot_path) / 'figures'
 
 os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
 batch_size = args.batch_size * len(args.gpu.split(','))
@@ -77,6 +77,9 @@ if __name__ == "__main__":
     if not os.path.exists(snapshot_path):
         os.makedirs(snapshot_path)
 
+    if not fig_path.exists():
+        fig_path.mkdir(parents=True, exist_ok=True)
+
     logging.basicConfig(filename=snapshot_path+"/log.txt", level=logging.INFO,
                         format='[%(asctime)s.%(msecs)03d] %(message)s', datefmt='%H:%M:%S')
     logging.getLogger().addHandler(logging.StreamHandler(sys.stdout))
@@ -96,7 +99,10 @@ if __name__ == "__main__":
 
     db_train = Lung(base_dir=train_data_path,
                        split='train',
-                       transform = Compose([
+                label_transform= Compose([
+                          RandCropByLabelClassesd(keys=['image', 'label'], label_key='label', spatial_size=[96, 96, 96], num_classes=3, num_samples=1, ratios=[1, 1, 2]),
+                          ]),
+                unlabel_transform = Compose([
                           RandSpatialCropd(keys=['image', 'label'], roi_size=[96, 96, 96], random_size=False),
                           ]))
     
@@ -126,6 +132,11 @@ if __name__ == "__main__":
     max_epoch = max_iterations//len(trainloader)+1
     lr_ = base_lr
     model.train()
+
+    avg_x = []
+    avg_cls1 = []
+    avg_cls2 = []
+
     for epoch_num in tqdm(range(max_epoch), ncols=70):
         for i_batch, sampled_batch in enumerate(trainloader):
             volume_batch, label_batch = sampled_batch['image'], sampled_batch['label']
@@ -184,9 +195,46 @@ if __name__ == "__main__":
             # writer.add_scalar('train/consistency_dist', consistency_dist, iter_num)
 
             logging.info(f'iteration{iter_num}: loss={loss.item():.4f} lr={lr_} loss_weight={consistency_weight:.4f}')
-            if iter_num % 20 == 0:
+
+            if iter_num % 100 == 0:
+
+                l_img_show = volume_batch[0, 0, :, :, 40].detach().cpu().numpy()
+                l_label_show = label_batch[0, :, :, 40].detach().cpu().numpy()
+                l_output_show = torch.argmax(outputs_soft[0], dim=0)[:, :, 40].detach().cpu().numpy()
+
+                u_img_show = volume_batch[labeled_bs, 0, :, :, 40].detach().cpu().numpy()
+                u_output_s = torch.argmax(outputs_soft[labeled_bs], dim=0)[:, :, 40].detach().cpu().numpy()
+                u_output_t = torch.argmax(torch.softmax(ema_output[0], dim=0), dim=0)[:, :, 40].detach().cpu().numpy()
+
+                fig, axes = plt.subplots(2, 3, figsize=(12, 8))
+                axes[0,0].imshow(l_img_show, cmap='gray')
+                axes[0,1].imshow(l_label_show, cmap='gray')
+                axes[0,2].imshow(l_output_show, cmap='gray')
+
+                axes[1,0].imshow(u_img_show, cmap='gray')
+                axes[1,1].imshow(u_output_s, cmap='gray')
+                axes[1,2].imshow(u_output_t, cmap='gray')
+
+                for ax in axes.ravel():
+                    ax.set_axis_off()
+                fig.tight_layout(pad=1)
+                fig.savefig(fig_path / (f'train_fig_{iter_num}.png'))
+
+            if iter_num % 200 == 0:
                 logging.info("start validation")
                 cls1_avg_metric, cls2_avg_metric = test_all_case_Lung(model, test_image_list, metric_detail=1)
+
+                avg_x.append(iter_num)
+                avg_cls1.append(cls1_avg_metric[0])
+                avg_cls2.append(cls2_avg_metric[0])
+
+                fig, ax = plt.subplots(figsize=(12,8))
+                ax.plot(avg_x, avg_cls1, label='cls1')
+                ax.plot(avg_x, avg_cls2, label='cls2')
+                ax.set_xticks([])
+                ax.set_yticks([])
+                plt.savefig(fig_path/'cls_dif.png', dpi=600)
+
                 writer.add_scalar('val/cls1_dice', cls1_avg_metric[0], iter_num)
                 writer.add_scalar('val/cls2_dice', cls2_avg_metric[0], iter_num)
                 logging.info(f'cls1_avg_metric: dice={cls1_avg_metric[0]:.4f},  cls2_avg_metric: dice={cls2_avg_metric[0]:.4f}')

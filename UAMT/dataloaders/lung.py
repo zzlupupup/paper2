@@ -5,13 +5,16 @@ import numpy as np
 from torch.utils.data import Dataset
 from torch.utils.data.sampler import Sampler
 from monai.transforms import LoadImage
+from monai.transforms import (Compose, RandSpatialCropd, RandCropByLabelClassesd)
 
 class Lung(Dataset):
-    def __init__(self, base_dir=None, split='train', transform=None):
+    def __init__(self, base_dir=None, split='train', label_transform=None, unlabel_transform=None):
         self._base_dir = pathlib.Path(base_dir)
         self.load = LoadImage(image_only=True,ensure_channel_first=True)
         self.image_list = []
-        self.transform = transform
+        self.label_transform = label_transform
+        self.unlabel_transform = unlabel_transform
+        self.split = split
         if split=='train':
             self.image_list = [dir for dir in (self._base_dir/'train').iterdir() if dir.is_dir()]
         elif split == 'test':
@@ -33,8 +36,10 @@ class Lung(Dataset):
             label = torch.zeros_like(img)
         
         sample = {'image': img, 'label': label.long()}
-        if self.transform:
-            sample = self.transform(sample)
+        if idx < 11 and idx >=0 and self.split=='train':
+            sample = self.label_transform(sample)[0]
+        if idx >= 11 and idx < 54 and self.split=='train':
+            sample = self.unlabel_transform(sample)
         label = sample['label'].squeeze(0)
         sample['label'] = label
         return sample
@@ -87,11 +92,22 @@ def grouper(iterable, n):
 
 
 if __name__ == "__main__":
-    lung = Lung(base_dir='D:/pythonProject/seg/data/lung', split='train')
-    print(len(lung))
-    sample = lung[0]
-    print(sample['image'].shape, sample['label'].shape)
+    lung = Lung(base_dir='D:/pythonProject/seg/data/lung', split='train', 
+                label_transform= Compose([
+                          RandCropByLabelClassesd(keys=['image', 'label'], label_key='label', spatial_size=[96, 96, 96], num_classes=3, num_samples=1, ratios=[1, 1, 2]),
+                          ]),
+                unlabel_transform = Compose([
+                          RandSpatialCropd(keys=['image', 'label'], roi_size=[96, 96, 96], random_size=False),
+                          ]))
+    sample = lung[10]
+    image = sample['image'][0][:,:,54]
+    label = sample['label'][:,:,54]
 
+    import matplotlib.pyplot as plt
+    fig, axes = plt.subplots(1,2)
+    axes[0].imshow(image, cmap='gray')
+    axes[1].imshow(label, cmap='gray')
+    fig.savefig('lung.png')
 
 
 
