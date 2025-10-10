@@ -207,6 +207,7 @@ def calculate_metric_percase_multiclass(pred, gt, num_classes):
         if gt_c.sum() == 0 and pred_c.sum() == 0:
             raise ValueError(f"Class {c} is missing in both prediction and ground truth.")  
         elif gt_c.sum() > 0 and pred_c.sum() == 0:
+            print(f"Warning: Class {c} is missing in prediction.")
             dice, jc, hd, asd = miss_pred_value
         else:
             dice = metric.binary.dc(pred_c, gt_c)

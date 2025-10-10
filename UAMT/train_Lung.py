@@ -24,9 +24,9 @@ from utils.test_3d_patch import test_all_case_Lung
 parser = argparse.ArgumentParser()
 parser.add_argument('--root_path', type=str, default='D:\\pythonProject\\seg\\data\\LUNG', help='Name of Experiment')
 parser.add_argument('--exp', type=str,  default='Lung_UAMT', help='model_name')
-parser.add_argument('--max_iterations', type=int,  default=6000, help='maximum epoch number to train')
-parser.add_argument('--batch_size', type=int, default=4, help='batch_size per gpu')
-parser.add_argument('--labeled_bs', type=int, default=2, help='labeled_batch_size per gpu')
+parser.add_argument('--max_iterations', type=int,  default=15000, help='maximum epoch number to train')
+parser.add_argument('--batch_size', type=int, default=2, help='batch_size per gpu')
+parser.add_argument('--labeled_bs', type=int, default=1, help='labeled_batch_size per gpu')
 parser.add_argument('--base_lr', type=float,  default=0.01, help='maximum epoch number to train')
 parser.add_argument('--deterministic', type=int,  default=1, help='whether use deterministic training')
 parser.add_argument('--seed', type=int,  default=1337, help='random seed')
@@ -183,8 +183,8 @@ if __name__ == "__main__":
             writer.add_scalar('train/consistency_weight', consistency_weight, iter_num)
             # writer.add_scalar('train/consistency_dist', consistency_dist, iter_num)
 
-            logging.info(f'iteration{iter_num}: loss={loss.item():.4f} lr={lr_} loss_weight={consistency_weight}')
-            if iter_num % 200 == 0:
+            logging.info(f'iteration{iter_num}: loss={loss.item():.4f} lr={lr_} loss_weight={consistency_weight:.4f}')
+            if iter_num % 20 == 0:
                 logging.info("start validation")
                 cls1_avg_metric, cls2_avg_metric = test_all_case_Lung(model, test_image_list, metric_detail=1)
                 writer.add_scalar('val/cls1_dice', cls1_avg_metric[0], iter_num)
