@@ -22,7 +22,7 @@ from monai.transforms import (Compose, RandSpatialCropd, RandCropByLabelClassesd
 from utils.test_3d_patch import test_all_case_Lung
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--root_path', type=str, default='D:\\pythonProject\\seg\\data\\LUNG', help='Name of Experiment')
+parser.add_argument('--root_path', type=str, default='../data/ LUNG', help='Name of Experiment')
 parser.add_argument('--exp', type=str,  default='Lung_UAMT', help='model_name')
 parser.add_argument('--max_iterations', type=int,  default=15000, help='maximum epoch number to train')
 parser.add_argument('--batch_size', type=int, default=2, help='batch_size per gpu')
