@@ -222,7 +222,9 @@ if __name__ == "__main__":
 
             if iter_num % 200 == 0:
                 logging.info("start validation")
-                cls1_avg_metric, cls2_avg_metric = test_all_case_Lung(model, test_image_list, metric_detail=1)
+                model.eval()
+                with torch.no_grad():
+                    cls1_avg_metric, cls2_avg_metric = test_all_case_Lung(model, test_image_list, metric_detail=1)
 
                 avg_x.append(iter_num)
                 avg_cls1.append(cls1_avg_metric[0])
@@ -238,6 +240,7 @@ if __name__ == "__main__":
                 writer.add_scalar('val/cls1_dice', cls1_avg_metric[0], iter_num)
                 writer.add_scalar('val/cls2_dice', cls2_avg_metric[0], iter_num)
                 logging.info(f'cls1_avg_metric: dice={cls1_avg_metric[0]:.4f},  cls2_avg_metric: dice={cls2_avg_metric[0]:.4f}')
+                model.train()
                 logging.info("end validation")
 
             ## change lr
