@@ -1,3 +1,7 @@
+import sys
+sys.path[0] = "UAMT"
+
+
 import torch
 import pathlib
 import itertools
@@ -96,8 +100,8 @@ if __name__ == "__main__":
     label_transform, unlabel_transform = get_transform()
     lung = Lung(base_dir='D:/pythonProject/seg/data/lung', split='train', label_transform=label_transform, unlabel_transform=unlabel_transform)
     sample = lung[9]
-    image = sample['image'][0][:,:,54]
-    label = sample['label'][:,:,54]
+    image = sample['image'][0][:,:,20]
+    label = sample['label'][:,:,20]
 
     import matplotlib.pyplot as plt
     fig, axes = plt.subplots(1,2)

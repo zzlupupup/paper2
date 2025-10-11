@@ -4,6 +4,9 @@ def get_transform():
     label_transform = transforms.Compose(
         [
             transforms.Orientationd(keys=["image", "label"], axcodes="RAS", labels=(('L', 'R'), ('P', 'A'), ('I', 'S'))),
+            transforms.ScaleIntensityRanged(
+                keys=["image"], a_min=-1, a_max=10, b_min=0, b_max=1, clip=True
+            ),
             transforms.RandCropByPosNegLabeld(
                 keys=["image", "label"],
                 label_key="label",
@@ -26,7 +29,11 @@ def get_transform():
 
     unlabel_transform = transforms.Compose([
             transforms.Orientationd(keys=["image", "label"], axcodes="RAS", labels=(('L', 'R'), ('P', 'A'), ('I', 'S'))),
+            transforms.ScaleIntensityRanged(
+                keys=["image"], a_min=-1, a_max=10, b_min=0, b_max=1, clip=True
+            ),
             transforms.RandSpatialCropd(keys=['image', 'label'], roi_size=[96, 96, 96], random_size=False),
+            transforms.ToTensord(keys=["image", "label"])
                           ])
 
     return label_transform, unlabel_transform
