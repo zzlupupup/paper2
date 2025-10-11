@@ -1,11 +1,11 @@
-import pathlib
 import torch
+import pathlib
 import itertools
 import numpy as np
 from torch.utils.data import Dataset
 from torch.utils.data.sampler import Sampler
 from monai.transforms import LoadImage
-from monai.transforms import (Compose, RandSpatialCropd, RandCropByLabelClassesd)
+from utils.data_util import get_transform
 
 class Lung(Dataset):
     def __init__(self, base_dir=None, split='train', label_transform=None, unlabel_transform=None):
@@ -92,14 +92,10 @@ def grouper(iterable, n):
 
 
 if __name__ == "__main__":
-    lung = Lung(base_dir='D:/pythonProject/seg/data/lung', split='train', 
-                label_transform= Compose([
-                          RandCropByLabelClassesd(keys=['image', 'label'], label_key='label', spatial_size=[96, 96, 96], num_classes=3, num_samples=1, ratios=[1, 1, 2]),
-                          ]),
-                unlabel_transform = Compose([
-                          RandSpatialCropd(keys=['image', 'label'], roi_size=[96, 96, 96], random_size=False),
-                          ]))
-    sample = lung[10]
+
+    label_transform, unlabel_transform = get_transform()
+    lung = Lung(base_dir='D:/pythonProject/seg/data/lung', split='train', label_transform=label_transform, unlabel_transform=unlabel_transform)
+    sample = lung[9]
     image = sample['image'][0][:,:,54]
     label = sample['label'][:,:,54]
 
@@ -108,7 +104,7 @@ if __name__ == "__main__":
     axes[0].imshow(image, cmap='gray')
     axes[1].imshow(label, cmap='gray')
     fig.savefig('lung.png')
-
+    plt.close()
 
 
         

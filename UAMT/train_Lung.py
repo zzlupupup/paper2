@@ -16,18 +16,17 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 from tensorboardX import SummaryWriter
 from networks.vnet import VNet
-from dataloaders import utils
 from utils import ramps, losses
 from dataloaders.lung import Lung, TwoStreamBatchSampler
-from monai.transforms import (Compose, RandSpatialCropd, RandCropByLabelClassesd)
 from utils.test_3d_patch import test_all_case_Lung
+from utils.data_util import get_transform
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--root_path', type=str, default='../data/ LUNG', help='Name of Experiment')
+parser.add_argument('--root_path', type=str, default='../data/LUNG', help='Name of Experiment')
 parser.add_argument('--exp', type=str,  default='Lung_UAMT', help='model_name')
-parser.add_argument('--max_iterations', type=int,  default=15000, help='maximum epoch number to train')
-parser.add_argument('--batch_size', type=int, default=2, help='batch_size per gpu')
-parser.add_argument('--labeled_bs', type=int, default=1, help='labeled_batch_size per gpu')
+parser.add_argument('--max_iterations', type=int,  default=6000, help='maximum epoch number to train')
+parser.add_argument('--batch_size', type=int, default=8, help='batch_size per gpu')
+parser.add_argument('--labeled_bs', type=int, default=4, help='labeled_batch_size per gpu')
 parser.add_argument('--base_lr', type=float,  default=0.01, help='maximum epoch number to train')
 parser.add_argument('--deterministic', type=int,  default=1, help='whether use deterministic training')
 parser.add_argument('--seed', type=int,  default=1337, help='random seed')
@@ -98,14 +97,12 @@ if __name__ == "__main__":
     model = create_model()
     ema_model = create_model(ema=True)
 
+    label_transform, unlabel_transform = get_transform()
     db_train = Lung(base_dir=train_data_path,
-                       split='train',
-                label_transform= Compose([
-                          RandCropByLabelClassesd(keys=['image', 'label'], label_key='label', spatial_size=[96, 96, 96], num_classes=3, num_samples=1, ratios=[1, 1, 2]),
-                          ]),
-                unlabel_transform = Compose([
-                          RandSpatialCropd(keys=['image', 'label'], roi_size=[96, 96, 96], random_size=False),
-                          ]))
+                    split='train',
+                    label_transform= label_transform,
+                    unlabel_transform= unlabel_transform
+                    )
     
     test_image_list = [dir for dir in (Path(train_data_path)/'test').iterdir() if dir.is_dir()]
     
@@ -137,6 +134,9 @@ if __name__ == "__main__":
     avg_x = []
     avg_cls1 = []
     avg_cls2 = []
+
+    cls1_best = 0.0
+    cls2_best = 0.0
 
     for epoch_num in tqdm(range(max_epoch), ncols=70):
         for i_batch, sampled_batch in enumerate(trainloader):
@@ -228,6 +228,13 @@ if __name__ == "__main__":
                 with torch.no_grad():
                     cls1_avg_metric, cls2_avg_metric = test_all_case_Lung(model, test_image_list, metric_detail=1)
 
+                if cls1_avg_metric >= cls1_best and cls2_avg_metric >= cls2_best:
+                    cls1_best = cls1_avg_metric
+                    cls2_best = cls2_avg_metric
+                    save_mode_path = os.path.join(snapshot_path, 'best_model.pth')
+                    torch.save(model.state_dict(), save_mode_path)
+                    logging.info("save best model")
+
                 avg_x.append(iter_num)
                 avg_cls1.append(cls1_avg_metric[0])
                 avg_cls2.append(cls2_avg_metric[0])
@@ -237,7 +244,7 @@ if __name__ == "__main__":
                 ax.plot(avg_x, avg_cls2, label='cls2')
                 ax.set_xticks([])
                 ax.set_yticks([])
-                plt.savefig(fig_path/'cls_dif.png', dpi=600)
+                plt.savefig(fig_path/'cls_dif.png')
                 plt.close()
 
                 writer.add_scalar('val/cls1_dice', cls1_avg_metric[0], iter_num)

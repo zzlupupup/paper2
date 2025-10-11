@@ -7,8 +7,7 @@ import torch
 import torch.nn.functional as F
 from tqdm import tqdm
 from skimage.measure import label
-from monai.transforms import LoadImaged
-
+from monai.transforms import LoadImaged, Compose, Orientationd
 def getLargestCC(segmentation):
     labels = label(segmentation)
     #assert( labels.max() != 0 ) # assume at least 1 CC
@@ -136,7 +135,10 @@ def test_all_case_LA(model, num_classes, patch_size=(112, 112, 80), stride_xy=18
     return avg_dice
 
 def test_all_case_Lung(model, image_list, num_classes=3, patch_size=(96, 96, 96), stride_xy=64, stride_z=64, save_result=False, test_save_path=None, preproc_fn=None, metric_detail=1, nms=0, metric_txt_save=0):
-    imagLoader = LoadImaged(keys=['image', 'label'])
+    imagLoader = Compose([
+        LoadImaged(keys=['image', 'label']),
+        Orientationd(keys=["image", "label"], axcodes="RAS", labels=(('L', 'R'), ('P', 'A'), ('I', 'S')))
+    ])
     ith = 0
     cls1_total_metric = 0.0
     cls2_total_metric = 0.0
