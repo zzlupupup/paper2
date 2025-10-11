@@ -1,5 +1,6 @@
 import os
 import sys
+import pickle
 import matplotlib.pyplot as plt
 import argparse
 import logging
@@ -218,7 +219,7 @@ if __name__ == "__main__":
                 for ax in axes.ravel():
                     ax.set_axis_off()
                 fig.tight_layout(pad=1)
-                fig.savefig(fig_path / (f'train_fig_{iter_num}.png'))
+                fig.savefig(fig_path / (f'train_fig.png'))
 
             if iter_num % 200 == 0:
                 logging.info("start validation")
@@ -260,6 +261,8 @@ if __name__ == "__main__":
             break
     save_mode_path = os.path.join(snapshot_path, 'iter_'+str(max_iterations)+'.pth')
     torch.save(model.state_dict(), save_mode_path)
+    with open(snapshot_path + '/dif.pkl', 'wb') as f:
+        pickle.dump([avg_x, avg_cls1, avg_cls2], f)
     logging.info("save model to {}".format(save_mode_path))
     writer.close()
 
