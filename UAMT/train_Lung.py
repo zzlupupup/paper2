@@ -220,6 +220,7 @@ if __name__ == "__main__":
                     ax.set_axis_off()
                 fig.tight_layout(pad=1)
                 fig.savefig(fig_path / (f'train_fig.png'))
+                plt.close()
 
             if iter_num % 200 == 0:
                 logging.info("start validation")
@@ -231,12 +232,13 @@ if __name__ == "__main__":
                 avg_cls1.append(cls1_avg_metric[0])
                 avg_cls2.append(cls2_avg_metric[0])
 
-                fig, ax = plt.subplots(figsize=(12,8))
+                fig, ax = plt.subplots(figsize=(8,5))
                 ax.plot(avg_x, avg_cls1, label='cls1')
                 ax.plot(avg_x, avg_cls2, label='cls2')
                 ax.set_xticks([])
                 ax.set_yticks([])
                 plt.savefig(fig_path/'cls_dif.png', dpi=600)
+                plt.close()
 
                 writer.add_scalar('val/cls1_dice', cls1_avg_metric[0], iter_num)
                 writer.add_scalar('val/cls2_dice', cls2_avg_metric[0], iter_num)
