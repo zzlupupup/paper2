@@ -1,7 +1,3 @@
-import sys
-sys.path[0] = "UAMT"
-
-
 import torch
 import pathlib
 import itertools
@@ -11,19 +7,23 @@ from torch.utils.data.sampler import Sampler
 from monai.transforms import LoadImage
 from utils.data_util import get_transform
 
+LOAD = LoadImage(image_only=True,ensure_channel_first=True)
+
 class Lung(Dataset):
     def __init__(self, base_dir=None, split='train', label_transform=None, unlabel_transform=None):
         self._base_dir = pathlib.Path(base_dir)
-        self.load = LoadImage(image_only=True,ensure_channel_first=True)
         self.image_list = []
         self.label_transform = label_transform
         self.unlabel_transform = unlabel_transform
         self.split = split
+
         if split=='train':
             self.image_list = [dir for dir in (self._base_dir/'train').iterdir() if dir.is_dir()]
         elif split == 'test':
             self.image_list = [dir for dir in (self._base_dir/'test').iterdir() if dir.is_dir()]
-        sorted(self.image_list)
+
+        self.image_list = sorted(self.image_list)
+
         print("total {} samples".format(len(self.image_list)))
     
     def __len__(self):
@@ -33,19 +33,31 @@ class Lung(Dataset):
         dir_name = self.image_list[idx]
         img = dir_name/(dir_name.name+'.nii.gz')
         label = dir_name/(dir_name.name+'_label.nii.gz')
-        img = self.load(img)
+        img = LOAD(img)
+
         if label.exists():
-            label = self.load(label)
+            label = LOAD(label)
         else:
             label = torch.zeros_like(img)
         
         sample = {'image': img, 'label': label.long()}
+
         if idx < 11 and idx >=0 and self.split=='train':
-            sample = self.label_transform(sample)[0]
+            if self.label_transform :
+                sample = self.label_transform(sample)
+            if isinstance(sample, (list, tuple)):
+                sample = sample[0]
         if idx >= 11 and idx < 54 and self.split=='train':
-            sample = self.unlabel_transform(sample)
+            if self.unlabel_transform:
+                sample = self.unlabel_transform(sample)
+            if isinstance(sample, (list, tuple)):
+                sample = sample[0]
+
+        sample = {k: v for k, v in sample.items() if k in ('image', 'label')}
+        
         label = sample['label'].squeeze(0)
         sample['label'] = label
+
         return sample
     
 class TwoStreamBatchSampler(Sampler):

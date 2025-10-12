@@ -2,12 +2,16 @@ import h5py
 import math
 import nibabel as nib
 import numpy as np
+import time
 from medpy import metric
+from pathlib import Path
 import torch
 import torch.nn.functional as F
 from tqdm import tqdm
 from skimage.measure import label
-from monai.transforms import LoadImaged, Compose, Orientationd, ScaleIntensityRanged
+from networks.vnet import VNet
+from monai.transforms import LoadImaged, Compose, Orientationd, ScaleIntensityRanged, ToTensord, CropForegroundd
+
 def getLargestCC(segmentation):
     labels = label(segmentation)
     #assert( labels.max() != 0 ) # assume at least 1 CC
@@ -134,13 +138,19 @@ def test_all_case_LA(model, num_classes, patch_size=(112, 112, 80), stride_xy=18
     print('average metric is {}'.format(avg_dice))
     return avg_dice
 
-def test_all_case_Lung(model, image_list, num_classes=3, patch_size=(96, 96, 96), stride_xy=64, stride_z=64, save_result=False, test_save_path=None, preproc_fn=None, metric_detail=1, nms=0, metric_txt_save=0):
+def test_all_case_Lung(model, image_list, num_classes=3, patch_size=(64, 64, 64), stride_xy=32, stride_z=32, save_result=False, test_save_path=None, preproc_fn=None, metric_detail=1, nms=0, metric_txt_save=0):
     imagLoader = Compose([
-        LoadImaged(keys=['image', 'label']),
+        LoadImaged(keys=['image', 'label'], ensure_channel_first=True),
         Orientationd(keys=["image", "label"], axcodes="RAS", labels=(('L', 'R'), ('P', 'A'), ('I', 'S'))),
         ScaleIntensityRanged(
                 keys=["image"], a_min=-1, a_max=10, b_min=0, b_max=1, clip=True
-            )
+            ),
+        CropForegroundd(
+                keys=["image", "label"],
+                source_key="label",
+                margin=5
+            ),
+        ToTensord(keys=['image', 'label'], track_meta=False)
     ])
     ith = 0
     cls1_total_metric = 0.0
@@ -153,21 +163,27 @@ def test_all_case_Lung(model, image_list, num_classes=3, patch_size=(96, 96, 96)
             "label": image_path/(imageName + "_label.nii.gz")
         }
         sample = imagLoader(sample)
-        image = sample['image'].numpy()
-        label = sample['label'].numpy()
+        image = sample['image'].squeeze(0).numpy()
+        label = sample['label'].squeeze(0).numpy()
         if preproc_fn is not None:
             image = preproc_fn(image)
+
+        infer_time_start = time.time()
         prediction, score_map = test_single_case(model, image, stride_xy, stride_z, patch_size, num_classes=num_classes)
+        infer_time_end = time.time()
+
         if nms:
             prediction = getLargestCC(prediction)
-            
+
+        metric_time_start = time.time()     
         results = calculate_metric_percase_multiclass(prediction, label, num_classes)
-        
+        metric_time_end = time.time()
+
         cls1 = results[1]
         cls2 = results[2]
 
         if metric_detail:
-            print(f"{imageName}: cls1_dice={cls1[0]:.4f},  cls2_dice={cls2[0]:.4f}")
+            print(f"{imageName}: cls1_dice={cls1[0]:.4f},  cls2_dice={cls2[0]:.4f}, infer_time={infer_time_end - infer_time_start:.2f}s, metric_time={metric_time_end - metric_time_start:.2f}s")
 
         cls1_total_metric += np.asarray(cls1)
         cls2_total_metric += np.asarray(cls2)
@@ -203,7 +219,7 @@ def calculate_metric_percase_multiclass(pred, gt, num_classes):
     if pred.shape != gt.shape:
         raise ValueError("Shape of pred and gt must be the same.")
     miss_pred_value=(0.0, 0.0, np.inf, np.inf)
-    results = [[None, None, None, None]] * num_classes
+    results = [[np.nan, np.nan, np.nan, np.nan] for _ in range(num_classes)]
 
     for c in range(1, num_classes):
         gt_c = (gt == c).astype(np.uint8)

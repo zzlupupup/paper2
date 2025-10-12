@@ -7,10 +7,15 @@ def get_transform():
             transforms.ScaleIntensityRanged(
                 keys=["image"], a_min=-1, a_max=10, b_min=0, b_max=1, clip=True
             ),
+            transforms.CropForegroundd(
+                keys=["image", "label"],
+                source_key="label",
+                margin=5
+            ),
             transforms.RandCropByPosNegLabeld(
                 keys=["image", "label"],
                 label_key="label",
-                spatial_size=(96, 96, 96),
+                spatial_size=(64, 64, 64),
                 pos=2,
                 neg=1,
                 num_samples=1,
@@ -23,7 +28,7 @@ def get_transform():
             transforms.RandRotate90d(keys=["image", "label"], prob=0.2, max_k=3),
             transforms.RandScaleIntensityd(keys="image", factors=0.1, prob=0.2),
             transforms.RandShiftIntensityd(keys="image", offsets=0.1, prob=0.2),
-            transforms.ToTensord(keys=["image", "label"]),
+            transforms.ToTensord(keys=["image", "label"], track_meta=False),
         ]
     )
 
@@ -32,8 +37,8 @@ def get_transform():
             transforms.ScaleIntensityRanged(
                 keys=["image"], a_min=-1, a_max=10, b_min=0, b_max=1, clip=True
             ),
-            transforms.RandSpatialCropd(keys=['image', 'label'], roi_size=[96, 96, 96], random_size=False),
-            transforms.ToTensord(keys=["image", "label"])
+            transforms.RandSpatialCropd(keys=['image', 'label'], roi_size=[64, 64, 64], random_size=False),
+            transforms.ToTensord(keys=["image", "label"], track_meta=False)
                           ])
 
     return label_transform, unlabel_transform

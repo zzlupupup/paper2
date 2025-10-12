@@ -24,7 +24,7 @@ from utils.data_util import get_transform
 parser = argparse.ArgumentParser()
 parser.add_argument('--root_path', type=str, default='../data/LUNG', help='Name of Experiment')
 parser.add_argument('--exp', type=str,  default='Lung_UAMT', help='model_name')
-parser.add_argument('--max_iterations', type=int,  default=6000, help='maximum epoch number to train')
+parser.add_argument('--max_iterations', type=int,  default=15000, help='maximum epoch number to train')
 parser.add_argument('--batch_size', type=int, default=8, help='batch_size per gpu')
 parser.add_argument('--labeled_bs', type=int, default=4, help='labeled_batch_size per gpu')
 parser.add_argument('--base_lr', type=float,  default=0.01, help='maximum epoch number to train')
@@ -57,7 +57,7 @@ if args.deterministic:
     torch.cuda.manual_seed(args.seed)
 
 num_classes = 3
-patch_size = (96, 96, 96)
+patch_size = (64, 64, 64)
 
 def get_current_consistency_weight(epoch):
     # Consistency ramp-up from https://arxiv.org/abs/1610.02242
@@ -152,13 +152,13 @@ if __name__ == "__main__":
             T = 8
             volume_batch_r = unlabeled_volume_batch.repeat(2, 1, 1, 1, 1)
             stride = volume_batch_r.shape[0] // 2
-            preds = torch.zeros([stride * T, 3, 96, 96, 96]).cuda()
+            preds = torch.zeros([stride * T, 3, 64, 64, 64]).cuda()
             for i in range(T//2):
                 ema_inputs = volume_batch_r + torch.clamp(torch.randn_like(volume_batch_r) * 0.1, -0.2, 0.2)
                 with torch.no_grad():
                     preds[2 * stride * i:2 * stride * (i + 1)] = ema_model(ema_inputs)
             preds = F.softmax(preds, dim=1)
-            preds = preds.reshape(T, stride, 3, 96, 96, 96)
+            preds = preds.reshape(T, stride, 3, 64, 64, 64)
             preds = torch.mean(preds, dim=0)  
             uncertainty = -1.0*torch.sum(preds*torch.log(preds + 1e-6), dim=1, keepdim=True) 
             ## calculate the loss
@@ -228,9 +228,10 @@ if __name__ == "__main__":
                 with torch.no_grad():
                     cls1_avg_metric, cls2_avg_metric = test_all_case_Lung(model, test_image_list, metric_detail=1)
 
-                if cls1_avg_metric >= cls1_best and cls2_avg_metric >= cls2_best:
-                    cls1_best = cls1_avg_metric
-                    cls2_best = cls2_avg_metric
+                if cls1_avg_metric[0] >= cls1_best and cls2_avg_metric[0] >= cls2_best:
+
+                    cls1_best = cls1_avg_metric[0]
+                    cls2_best = cls2_avg_metric[0]
                     save_mode_path = os.path.join(snapshot_path, 'best_model.pth')
                     torch.save(model.state_dict(), save_mode_path)
                     logging.info("save best model")
