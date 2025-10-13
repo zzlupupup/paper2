@@ -110,11 +110,10 @@ if __name__ == "__main__":
             
             outputs = net(volume_batch)
 
-            loss_seg = F.cross_entropy(outputs, label_batch)
-
+            weights = torch.tensor([0.2, 1, 2], dtype=torch.float32).cuda()
+            loss_seg = F.cross_entropy(outputs, label_batch, weight=weights)
             outputs_soft = F.softmax(outputs, dim=1)
-            loss_seg_dice = 0.5*(dice_loss(outputs_soft[:, 1, :, :, :], label_batch == 1) + 
-                            dice_loss(outputs_soft[:, 2, :, :, :], label_batch == 2))
+            loss_seg_dice = 0.5 * dice_loss(outputs_soft[:, 1, :, :, :], label_batch == 1) + dice_loss(outputs_soft[:, 2, :, :, :], label_batch == 2)
             
             loss = 0.5*(loss_seg+loss_seg_dice)
 
@@ -127,7 +126,7 @@ if __name__ == "__main__":
             writer.add_scalar('loss/loss_seg', loss_seg, iter_num)
             writer.add_scalar('loss/loss_seg_dice', loss_seg_dice, iter_num)
             writer.add_scalar('loss/loss', loss, iter_num)
-            logging.info('iteration %d : loss : %f' % (iter_num, loss.item()))
+            logging.info(f'iteration{iter_num}: loss={loss.item():.4f}, ce_loss={loss_seg.item():.4f}, dc_loss={loss_seg_dice.item():.4f}')
             
             if iter_num % 100 == 0:
 
@@ -136,9 +135,9 @@ if __name__ == "__main__":
                 l_output_show = torch.argmax(outputs_soft[0], dim=0)[:, :, 40].detach().cpu().numpy()
 
                 fig, axes = plt.subplots(1, 3, figsize=(12, 8))
-                axes[0,0].imshow(l_img_show, cmap='gray')
-                axes[0,1].imshow(l_label_show, cmap='gray')
-                axes[0,2].imshow(l_output_show, cmap='gray')
+                axes[0].imshow(l_img_show, cmap='gray')
+                axes[1].imshow(l_label_show, cmap='gray')
+                axes[2].imshow(l_output_show, cmap='gray')
 
                 for ax in axes.ravel():
                     ax.set_axis_off()
@@ -176,6 +175,7 @@ if __name__ == "__main__":
                 writer.add_scalar('val/cls1_dice', cls1_avg_metric[0], iter_num)
                 writer.add_scalar('val/cls2_dice', cls2_avg_metric[0], iter_num)
                 logging.info(f'cls1_avg_metric: dice={cls1_avg_metric[0]:.4f},  cls2_avg_metric: dice={cls2_avg_metric[0]:.4f}')
+                logging.info(f'cls1_best={cls1_best},  cls2_best={cls2_best}')
                 net.train()
                 logging.info("end validation")
 

@@ -23,7 +23,7 @@ from utils.data_util import get_transform
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--root_path', type=str, default='../data/LUNG', help='Name of Experiment')
-parser.add_argument('--exp', type=str,  default='Lung_UAMT', help='model_name')
+parser.add_argument('--exp', type=str,  default='UAMT', help='model_name')
 parser.add_argument('--max_iterations', type=int,  default=6000, help='maximum epoch number to train')
 parser.add_argument('--batch_size', type=int, default=4, help='batch_size per gpu')
 parser.add_argument('--labeled_bs', type=int, default=2, help='labeled_batch_size per gpu')
@@ -35,7 +35,7 @@ parser.add_argument('--gpu', type=str,  default='0', help='GPU to use')
 parser.add_argument('--ema_decay', type=float,  default=0.99, help='ema_decay')
 parser.add_argument('--consistency_type', type=str,  default="mse", help='consistency_type')
 parser.add_argument('--consistency', type=float,  default=0.1, help='consistency')
-parser.add_argument('--consistency_rampup', type=float,  default=100.0, help='consistency_rampup')
+parser.add_argument('--consistency_rampup', type=float,  default=40.0, help='consistency_rampup')
 args = parser.parse_args()
 
 train_data_path = args.root_path
@@ -162,10 +162,13 @@ if __name__ == "__main__":
             preds = torch.mean(preds, dim=0)  
             uncertainty = -1.0*torch.sum(preds*torch.log(preds + 1e-6), dim=1, keepdim=True) 
             ## calculate the loss
-            loss_seg = F.cross_entropy(outputs[:labeled_bs], label_batch[:labeled_bs])
+
+            weights = torch.tensor([0.2, 1, 2], dtype=torch.float32).cuda()
+            loss_seg = F.cross_entropy(outputs[:labeled_bs], label_batch[:labeled_bs], weight=weights)
+            
             outputs_soft = F.softmax(outputs, dim=1)
-            loss_seg_dice = 0.5*(losses.dice_loss(outputs_soft[:labeled_bs, 1, :, :, :], label_batch[:labeled_bs] == 1) + 
-                                 losses.dice_loss(outputs_soft[:labeled_bs, 2, :, :, :], label_batch[:labeled_bs] == 2)) 
+            loss_seg_dice = 0.5*losses.dice_loss(outputs_soft[:labeled_bs, 1, :, :, :], label_batch[:labeled_bs] == 1) + losses.dice_loss(outputs_soft[:labeled_bs, 2, :, :, :], label_batch[:labeled_bs] == 2)
+            
             supervised_loss = 0.5*(loss_seg+loss_seg_dice)
 
             consistency_weight = get_current_consistency_weight(iter_num//150)
@@ -251,6 +254,8 @@ if __name__ == "__main__":
                 writer.add_scalar('val/cls1_dice', cls1_avg_metric[0], iter_num)
                 writer.add_scalar('val/cls2_dice', cls2_avg_metric[0], iter_num)
                 logging.info(f'cls1_avg_metric: dice={cls1_avg_metric[0]:.4f},  cls2_avg_metric: dice={cls2_avg_metric[0]:.4f}')
+                logging.info(f'cls1_best={cls1_best:.4f},  cls2_best={cls2_best:.4f}')
+
                 model.train()
                 logging.info("end validation")
 

@@ -12,15 +12,15 @@ def get_transform():
                 source_key="label",
                 margin=5
             ),
-            transforms.RandCropByPosNegLabeld(
-                keys=["image", "label"],
+            transforms.RandCropByLabelClassesd(
+                keys=["image","label"],
                 label_key="label",
-                spatial_size=(64, 64, 64),
-                pos=2,
-                neg=1,
+                spatial_size=[64, 64, 64],
+                ratios=[1, 2, 3],
+                num_classes=3,
                 num_samples=1,
                 image_key="image",
-                image_threshold=0,
+                image_threshold=0
             ),
             transforms.RandFlipd(keys=["image", "label"], prob=0.2, spatial_axis=0),
             transforms.RandFlipd(keys=["image", "label"], prob=0.2, spatial_axis=1),
