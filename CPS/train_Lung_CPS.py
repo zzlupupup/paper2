@@ -23,7 +23,7 @@ from utils.data_util import get_transform
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--root_path', type=str, default='../data/LUNG', help='Name of Experiment')
-parser.add_argument('--exp', type=str,  default='MT', help='model_name')
+parser.add_argument('--exp', type=str,  default='CPS', help='model_name')
 parser.add_argument('--max_iterations', type=int,  default=6000, help='maximum epoch number to train')
 parser.add_argument('--batch_size', type=int, default=4, help='batch_size per gpu')
 parser.add_argument('--labeled_bs', type=int, default=2, help='labeled_batch_size per gpu')
@@ -32,18 +32,15 @@ parser.add_argument('--deterministic', type=int,  default=1, help='whether use d
 parser.add_argument('--seed', type=int,  default=1337, help='random seed')
 parser.add_argument('--gpu', type=str,  default='0', help='GPU to use')
 ### costs
-parser.add_argument('--ema_decay', type=float,  default=0.99, help='ema_decay')
-parser.add_argument('--consistency_type', type=str,  default="mse", help='consistency_type')
-parser.add_argument('--consistency', type=float,  default=0.1, help='consistency')
-parser.add_argument('--consistency_rampup', type=float,  default=40.0, help='consistency_rampup')
+parser.add_argument('--cps_weight', type=float,  default=1.0, help='cps_weight')
+parser.add_argument('--cps_rampup', type=float,  default=40.0, help='cps_rampup')
 args = parser.parse_args()
 
 train_data_path = args.root_path
 snapshot_path = "./model/" + args.exp + "/"
 fig_path = Path(snapshot_path) / 'figures'
 
-os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
-batch_size = args.batch_size * len(args.gpu.split(','))
+batch_size = args.batch_size
 max_iterations = args.max_iterations
 base_lr = args.base_lr
 labeled_bs = args.labeled_bs
@@ -61,16 +58,11 @@ patch_size = (64, 64, 64)
 
 def get_current_consistency_weight(epoch):
     # Consistency ramp-up from https://arxiv.org/abs/1610.02242
-    return args.consistency * ramps.sigmoid_rampup(epoch, args.consistency_rampup)
-
-def update_ema_variables(model, ema_model, alpha, global_step):
-    # Use the true average until the exponential average is more correct
-    alpha = min(1 - 1 / (global_step + 1), alpha)
-    for ema_param, param in zip(ema_model.parameters(), model.parameters()):
-        ema_param.data.mul_(alpha).add_(1 - alpha, param.data)
+    return args.cps_weight * ramps.sigmoid_rampup(epoch, args.cps_rampup)
 
 def worker_init_fn(worker_id):
     random.seed(args.seed+worker_id)
+
 
 if __name__ == "__main__":
     ## make logger file
@@ -85,17 +77,8 @@ if __name__ == "__main__":
     logging.getLogger().addHandler(logging.StreamHandler(sys.stdout))
     logging.info(str(args))
 
-    def create_model(ema=False):
-        # Network definition
-        net = VNet(n_channels=1, n_classes=num_classes, normalization='batchnorm', has_dropout=True)
-        model = net.cuda()
-        if ema:
-            for param in model.parameters():
-                param.detach_()
-        return model
-
-    model = create_model()
-    ema_model = create_model(ema=True)
+    model_l = VNet(n_channels=1, n_classes=num_classes, normalization='batchnorm', has_dropout=True).cuda()
+    model_r = VNet(n_channels=1, n_classes=num_classes, normalization='batchnorm', has_dropout=True).cuda()
 
     label_transform, unlabel_transform = get_transform()
     db_train = Lung(base_dir=train_data_path,
@@ -112,24 +95,17 @@ if __name__ == "__main__":
 
     trainloader = DataLoader(db_train, batch_sampler=batch_sampler, num_workers=4, pin_memory=True,worker_init_fn=worker_init_fn)
 
-    model.train()
-    ema_model.train()
-    optimizer = optim.SGD(model.parameters(), lr=base_lr, momentum=0.9, weight_decay=0.0001)
+    model_l.train()
+    model_r.train()
 
-    if args.consistency_type == 'mse':
-        consistency_criterion = losses.softmax_mse_loss
-    elif args.consistency_type == 'kl':
-        consistency_criterion = losses.softmax_kl_loss
-    else:
-        assert False, args.consistency_type
+    optimizer_l = optim.SGD(model_l.parameters(), lr=base_lr, momentum=0.9, weight_decay=0.0001)
+    optimizer_r = optim.SGD(model_r.parameters(), lr=base_lr, momentum=0.9, weight_decay=0.0001)
 
     writer = SummaryWriter(snapshot_path+'/log')
     logging.info("{} itertations per epoch".format(len(trainloader)))
 
     iter_num = 0
     max_epoch = max_iterations//len(trainloader)+1
-    lr_ = base_lr
-    model.train()
 
     avg_x = []
     avg_cls1 = []
@@ -138,54 +114,62 @@ if __name__ == "__main__":
     cls1_best = 0.0
     cls2_best = 0.0
 
+    ce_weights = torch.tensor([0.2, 1, 2], dtype=torch.float32).cuda()
     for epoch_num in tqdm(range(max_epoch), ncols=70):
         for i_batch, sampled_batch in enumerate(trainloader):
             volume_batch, label_batch = sampled_batch['image'], sampled_batch['label']
             volume_batch, label_batch = volume_batch.cuda(), label_batch.cuda()
-            unlabeled_volume_batch = volume_batch[labeled_bs:]
-
-            noise = torch.clamp(torch.randn_like(unlabeled_volume_batch) * 0.1, -0.2, 0.2)
-            ema_inputs = unlabeled_volume_batch + noise
-            outputs = model(volume_batch)
-            with torch.no_grad():
-                ema_output = ema_model(ema_inputs)
-
-            weights = torch.tensor([0.2, 1, 2], dtype=torch.float32).cuda()
-            loss_seg = F.cross_entropy(outputs[:labeled_bs], label_batch[:labeled_bs], weight=weights)
             
-            outputs_soft = F.softmax(outputs, dim=1)
-            loss_seg_dice = 0.5*losses.dice_loss(outputs_soft[:labeled_bs, 1, :, :, :], label_batch[:labeled_bs] == 1) + losses.dice_loss(outputs_soft[:labeled_bs, 2, :, :, :], label_batch[:labeled_bs] == 2)
+            outputs_l = model_l(volume_batch)
+            outputs_r = model_r(volume_batch)
+            #sup loss
+            sup_ce_l = F.cross_entropy(outputs_l[:labeled_bs], label_batch[:labeled_bs], weight=ce_weights)
+            sup_ce_r = F.cross_entropy(outputs_r[:labeled_bs], label_batch[:labeled_bs], weight=ce_weights)
+
+            outputs_soft_l = F.softmax(outputs_l, dim=1)
+            outputs_soft_r = F.softmax(outputs_r, dim=1)
+
+            sup_dice_l = 0.5*losses.dice_loss(outputs_soft_l[:labeled_bs, 1, :, :, :], label_batch[:labeled_bs] == 1) + losses.dice_loss(outputs_soft_l[:labeled_bs, 2, :, :, :], label_batch[:labeled_bs] == 2)
+            sup_dice_r = 0.5*losses.dice_loss(outputs_soft_r[:labeled_bs, 1, :, :, :], label_batch[:labeled_bs] == 1) + losses.dice_loss(outputs_soft_r[:labeled_bs, 2, :, :, :], label_batch[:labeled_bs] == 2)
             
-            supervised_loss = 0.5*(loss_seg+loss_seg_dice)
+            sup_loss = 0.5*(sup_ce_l + sup_ce_r + sup_dice_l + sup_dice_r)
 
-            consistency_weight = get_current_consistency_weight(iter_num//150)
-            consistency_dist = torch.mean(consistency_criterion(outputs[labeled_bs:], ema_output))
+            #cps_loss
+            pseudo_l = torch.argmax(outputs_soft_l, dim=1).long().detach()
+            pseudo_r = torch.argmax(outputs_soft_r, dim=1).long().detach()  
 
-            consistency_loss = consistency_weight * consistency_dist
-            loss = supervised_loss + consistency_loss
+            cps_ce_l = F.cross_entropy(outputs_l, pseudo_r, weight=ce_weights)
+            cps_ce_r = F.cross_entropy(outputs_r, pseudo_l, weight=ce_weights)
+            
+            cps_dice_l = 0.5 * losses.dice_loss(outputs_soft_l[:, 1, ...], pseudo_r == 1) + losses.dice_loss(outputs_soft_l[:, 2, ...], pseudo_r == 2)
+            cps_dice_r = 0.5 * losses.dice_loss(outputs_soft_r[:, 1, ...], pseudo_l == 1) + losses.dice_loss(outputs_soft_r[:, 2, ...], pseudo_l == 2)
+            
+            cps_loss = 0.5 * (cps_ce_l + cps_ce_r + cps_dice_l + cps_dice_r)
 
-            optimizer.zero_grad()
+            #all_loss 
+            cps_weight = get_current_consistency_weight(iter_num//150)
+            loss = sup_loss + cps_weight * cps_loss
+
+            optimizer_l.zero_grad()
+            optimizer_r.zero_grad()
             loss.backward()
-            optimizer.step()
-            update_ema_variables(model, ema_model, args.ema_decay, iter_num)
+            optimizer_l.step()
+            optimizer_r.step()
 
             iter_num = iter_num + 1
-            writer.add_scalar('lr', lr_, iter_num)
             writer.add_scalar('loss/loss', loss.item(), iter_num)
-            writer.add_scalar('train/consistency_loss', consistency_loss.item(), iter_num)
-            writer.add_scalar('train/consistency_weight', consistency_weight, iter_num)
 
-            logging.info(f'iteration{iter_num}: loss={loss.item():.4f} loss_weight={consistency_weight:.4f} consis_dist={consistency_dist.item():.4f}')
+            logging.info(f'iteration{iter_num}: loss={loss.item():.4f}, sup_loss={sup_loss.item():.4f}, cps_loss={cps_loss.item():.4f}, cps_weight={cps_weight:.4f}')
 
             if iter_num % 100 == 0:
 
                 l_img_show = volume_batch[0, 0, :, :, 40].detach().cpu().numpy()
                 l_label_show = label_batch[0, :, :, 40].detach().cpu().numpy()
-                l_output_show = torch.argmax(outputs_soft[0], dim=0)[:, :, 40].detach().cpu().numpy()
+                l_output_show = pseudo_l[0, :, :, 40].cpu().numpy()
 
                 u_img_show = volume_batch[labeled_bs, 0, :, :, 40].detach().cpu().numpy()
-                u_output_s = torch.argmax(outputs_soft[labeled_bs], dim=0)[:, :, 40].detach().cpu().numpy()
-                u_output_t = torch.argmax(torch.softmax(ema_output[0], dim=0), dim=0)[:, :, 40].detach().cpu().numpy()
+                u_output_l = pseudo_l[labeled_bs, :, :, 40].cpu().numpy()
+                u_output_r = pseudo_r[labeled_bs, :, :, 40].cpu().numpy()
 
                 fig, axes = plt.subplots(2, 3, figsize=(12, 8))
                 axes[0,0].imshow(l_img_show, cmap='gray')
@@ -193,8 +177,8 @@ if __name__ == "__main__":
                 axes[0,2].imshow(l_output_show, cmap='gray')
 
                 axes[1,0].imshow(u_img_show, cmap='gray')
-                axes[1,1].imshow(u_output_s, cmap='gray')
-                axes[1,2].imshow(u_output_t, cmap='gray')
+                axes[1,1].imshow(u_output_l, cmap='gray')
+                axes[1,2].imshow(u_output_r, cmap='gray')
 
                 for ax in axes.ravel():
                     ax.set_axis_off()
@@ -204,52 +188,62 @@ if __name__ == "__main__":
 
             if iter_num % 200 == 0:
                 logging.info("start validation")
-                model.eval()
+                model_l.eval()
                 with torch.no_grad():
-                    cls1_avg_metric, cls2_avg_metric = test_all_case_Lung(model, test_image_list, metric_detail=1)
+                    cls1_avg_metric, cls2_avg_metric = test_all_case_Lung(model_l, test_image_list, metric_detail=1)
 
                 if cls1_avg_metric[0] >= cls1_best and cls2_avg_metric[0] >= cls2_best:
 
                     cls1_best = cls1_avg_metric[0]
                     cls2_best = cls2_avg_metric[0]
-                    save_mode_path = os.path.join(snapshot_path, 'best_model.pth')
-                    torch.save(model.state_dict(), save_mode_path)
-                    logging.info("save best model")
 
-                avg_x.append(iter_num)
-                avg_cls1.append(cls1_avg_metric[0])
-                avg_cls2.append(cls2_avg_metric[0])
+                    save_mode_path_l = os.path.join(snapshot_path, 'best_model_l.pth')
+                    save_mode_path_r = os.path.join(snapshot_path, 'best_model_r.pth')
+                    torch.save(model_l.state_dict(), save_mode_path_l)
+                    torch.save(model_r.state_dict(), save_mode_path_r)
+                    logging.info("=============save best model===============")
 
-                fig, ax = plt.subplots(figsize=(8,5))
-                ax.plot(avg_x, avg_cls1, label='cls1')
-                ax.plot(avg_x, avg_cls2, label='cls2')
-                ax.set_xticks([])
-                ax.set_yticks([])
-                plt.savefig(fig_path/'cls_dif.png')
-                plt.close()
+                    avg_x.append(iter_num)
+                    avg_cls1.append(cls1_avg_metric[0])
+                    avg_cls2.append(cls2_avg_metric[0])
+
+                    fig, ax = plt.subplots(figsize=(8,5))
+                    ax.plot(avg_x, avg_cls1, label='cls1')
+                    ax.plot(avg_x, avg_cls2, label='cls2')
+                    ax.set_xticks([])
+                    ax.set_yticks([])
+                    plt.savefig(fig_path/'cls_dif.png')
+                    plt.close()
 
                 writer.add_scalar('val/cls1_dice', cls1_avg_metric[0], iter_num)
                 writer.add_scalar('val/cls2_dice', cls2_avg_metric[0], iter_num)
                 logging.info(f'cls1_avg_metric: dice={cls1_avg_metric[0]:.4f},  cls2_avg_metric: dice={cls2_avg_metric[0]:.4f}')
                 logging.info(f'cls1_best={cls1_best:.4f},  cls2_best={cls2_best:.4f}')
 
-                model.train()
+                model_l.train()
                 logging.info("end validation")
 
             if iter_num % 1000 == 0:
-                save_mode_path = os.path.join(snapshot_path, 'iter_' + str(iter_num) + '.pth')
-                torch.save(model.state_dict(), save_mode_path)
-                logging.info("save model to {}".format(save_mode_path))
+                save_mode_path_l = os.path.join(snapshot_path, 'iter_' + str(iter_num) + '_l.pth')
+                torch.save(model_l.state_dict(), save_mode_path_l)
+
+                save_mode_path_r = os.path.join(snapshot_path, 'iter_' + str(iter_num) + '_r.pth')
+                torch.save(model_r.state_dict(), save_mode_path_r)
+                logging.info("save model ")
 
             if iter_num >= max_iterations:
                 break
             time1 = time.time()
         if iter_num >= max_iterations:
             break
-    save_mode_path = os.path.join(snapshot_path, 'iter_'+str(max_iterations)+'.pth')
-    torch.save(model.state_dict(), save_mode_path)
+
+    save_mode_path_l = os.path.join(snapshot_path, 'iter_'+str(max_iterations)+'_l.pth')
+    torch.save(model_l.state_dict(), save_mode_path_l)
+    save_mode_path_r = os.path.join(snapshot_path, 'iter_'+str(max_iterations)+'_r.pth')
+    torch.save(model_r.state_dict(), save_mode_path_r)
+
     with open(snapshot_path + '/dif.pkl', 'wb') as f:
         pickle.dump([avg_x, avg_cls1, avg_cls2], f)
-    logging.info("save model to {}".format(save_mode_path))
+    logging.info("save model")
     writer.close()
 
