@@ -150,7 +150,6 @@ if __name__ == "__main__":
             with torch.no_grad():
                 ema_output = ema_model(ema_inputs)
 
-
             weights = torch.tensor([0.2, 1, 2], dtype=torch.float32).cuda()
             loss_seg = F.cross_entropy(outputs[:labeled_bs], label_batch[:labeled_bs], weight=weights)
             
