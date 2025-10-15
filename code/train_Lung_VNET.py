@@ -6,7 +6,6 @@ from tqdm import tqdm
 from tensorboardX import SummaryWriter
 import argparse
 import logging
-import time
 import random
 import numpy as np
 from pathlib import Path
