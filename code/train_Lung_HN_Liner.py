@@ -25,7 +25,7 @@ from utils.data_util import get_transform
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--root_path', type=str, default='../data/LUNG', help='Name of Experiment')
-parser.add_argument('--exp', type=str,  default='HN_base', help='model_name')
+parser.add_argument('--exp', type=str,  default='HN_Liner', help='model_name')
 parser.add_argument('--max_iterations', type=int,  default=6000, help='maximum epoch number to train')
 parser.add_argument('--batch_size', type=int, default=4, help='batch_size per gpu')
 parser.add_argument('--labeled_bs', type=int, default=2, help='labeled_batch_size per gpu')
@@ -140,14 +140,15 @@ if __name__ == "__main__":
             sup_loss = 0.5*(sup_ce_l + sup_ce_r + sup_dice_l + sup_dice_r)
 
             #cps_loss
-            pseudo_l = torch.argmax(outputs_soft_l, dim=1).long().detach()
-            pseudo_r = torch.argmax(outputs_soft_r, dim=1).long().detach()  
+            unlabel_fusion_liner = (outputs_l[labeled_bs:] + outputs_r[labeled_bs:]) / 2 
+            unlabel_fusion_liner = torch.softmax(unlabel_fusion_liner, dim=1)
+            unlabel_fusion_liner = torch.argmax(unlabel_fusion_liner, dim=1)
 
-            cps_ce_l = F.cross_entropy(outputs_l[labeled_bs:], pseudo_r[labeled_bs:], weight=ce_weights)
-            cps_ce_r = F.cross_entropy(outputs_r[labeled_bs:], pseudo_l[labeled_bs:], weight=ce_weights)
+            cps_ce_l = F.cross_entropy(outputs_l[labeled_bs:], unlabel_fusion_liner, weight=ce_weights)
+            cps_ce_r = F.cross_entropy(outputs_r[labeled_bs:], unlabel_fusion_liner, weight=ce_weights)
             
-            cps_dice_l = 0.5 * losses.dice_loss(outputs_soft_l[labeled_bs:, 1, ...], pseudo_r[labeled_bs:] == 1) + losses.dice_loss(outputs_soft_l[labeled_bs:, 2, ...], pseudo_r[labeled_bs:] == 2)
-            cps_dice_r = 0.5 * losses.dice_loss(outputs_soft_r[labeled_bs:, 1, ...], pseudo_l[labeled_bs:] == 1) + losses.dice_loss(outputs_soft_r[labeled_bs:, 2, ...], pseudo_l[labeled_bs:] == 2)
+            cps_dice_l = 0.5 * losses.dice_loss(outputs_soft_l[labeled_bs:, 1, ...], unlabel_fusion_liner == 1) + losses.dice_loss(outputs_soft_l[labeled_bs:, 2, ...], unlabel_fusion_liner == 2)
+            cps_dice_r = 0.5 * losses.dice_loss(outputs_soft_r[labeled_bs:, 1, ...], unlabel_fusion_liner == 1) + losses.dice_loss(outputs_soft_r[labeled_bs:, 2, ...], unlabel_fusion_liner == 2)
             
             cps_loss = 0.5 * (cps_ce_l + cps_ce_r + cps_dice_l + cps_dice_r)
 
@@ -170,11 +171,10 @@ if __name__ == "__main__":
 
                 l_img_show = volume_batch[0, 0, :, :, 40].detach().cpu().numpy()
                 l_label_show = label_batch[0, :, :, 40].detach().cpu().numpy()
-                l_output_show = pseudo_l[0, :, :, 40].cpu().numpy()
+                l_output_show = torch.argmax(outputs_soft_r[0, :, :, :, 40], dim=0).detach.cpu().numpy()
 
                 u_img_show = volume_batch[labeled_bs, 0, :, :, 40].detach().cpu().numpy()
-                u_output_l = pseudo_l[labeled_bs, :, :, 40].cpu().numpy()
-                u_output_r = pseudo_r[labeled_bs, :, :, 40].cpu().numpy()
+                u_output_l = unlabel_fusion_liner[0, :, :, 40].cpu().numpy()
 
                 fig, axes = plt.subplots(2, 3, figsize=(12, 8))
                 axes[0,0].imshow(l_img_show, cmap='gray')
@@ -183,7 +183,6 @@ if __name__ == "__main__":
 
                 axes[1,0].imshow(u_img_show, cmap='gray')
                 axes[1,1].imshow(u_output_l, cmap='gray')
-                axes[1,2].imshow(u_output_r, cmap='gray')
 
                 for ax in axes.ravel():
                     ax.set_axis_off()
@@ -208,17 +207,17 @@ if __name__ == "__main__":
                     torch.save(model_r.state_dict(), save_mode_path_r)
                     logging.info("=============save best model===============")
 
-                    avg_x.append(iter_num)
-                    avg_cls1.append(cls1_avg_metric[0])
-                    avg_cls2.append(cls2_avg_metric[0])
+                avg_x.append(iter_num)
+                avg_cls1.append(cls1_avg_metric[0])
+                avg_cls2.append(cls2_avg_metric[0])
 
-                    fig, ax = plt.subplots(figsize=(8,5))
-                    ax.plot(avg_x, avg_cls1, label='cls1')
-                    ax.plot(avg_x, avg_cls2, label='cls2')
-                    ax.set_xticks([])
-                    ax.set_yticks([])
-                    plt.savefig(fig_path/'cls_dif.png')
-                    plt.close()
+                fig, ax = plt.subplots(figsize=(8,5))
+                ax.plot(avg_x, avg_cls1, label='cls1')
+                ax.plot(avg_x, avg_cls2, label='cls2')
+                ax.set_xticks([])
+                ax.set_yticks([])
+                plt.savefig(fig_path/'cls_dif.png')
+                plt.close()
 
                 writer.add_scalar('val/cls1_dice', cls1_avg_metric[0], iter_num)
                 writer.add_scalar('val/cls2_dice', cls2_avg_metric[0], iter_num)
