@@ -173,7 +173,7 @@ if __name__ == "__main__":
 
                 l_img_show = volume_batch[0, 0, :, :, 40].detach().cpu().numpy()
                 l_label_show = label_batch[0, :, :, 40].detach().cpu().numpy()
-                l_output_show = torch.argmax(outputs_soft_r[0, :, :, :, 40], dim=0).detach.cpu().numpy()
+                l_output_show = torch.argmax(outputs_soft_r[0, :, :, :, 40], dim=0).detach().cpu().numpy()
 
                 u_img_show = volume_batch[labeled_bs, 0, :, :, 40].detach().cpu().numpy()
                 u_output_l = unlabel_fusion[0, :, :, 40].cpu().numpy()
