@@ -36,18 +36,22 @@ class Fusion_Preds(nn.Module):
             dropout=0.1
         )
 
-        self.up = nn.Upsample(scale_factor=patch_size[0], mode='trilinear')
-
-        decoder_in_channels = fea_dim + in_chan
-
-        self.decoder = nn.Sequential(
-            nn.Conv3d(decoder_in_channels, fea_dim // 2, kernel_size=3, padding=1, bias=False),
+        self.tokens_encoder = nn.Sequential(
+            nn.Upsample(scale_factor=patch_size[0], mode='trilinear'),
+            nn.Conv3d(fea_dim, fea_dim // 2, kernel_size=3, padding=1),
             nn.BatchNorm3d(fea_dim // 2),
             nn.ReLU(inplace=True),
-            nn.Conv3d(fea_dim // 2, fea_dim // 4, kernel_size=3, padding=1, bias=False),
+            nn.Conv3d(fea_dim // 2, fea_dim // 4, kernel_size=3, padding=1),
             nn.BatchNorm3d(fea_dim // 4),
             nn.ReLU(inplace=True),
-            nn.Conv3d(fea_dim // 4, in_chan, kernel_size=1)
+        )
+
+        out_dim = (fea_dim // 4 ) + in_chan
+        self.out = nn.Sequential(
+            nn.Conv3d(out_dim, out_dim // 2, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm3d(fea_dim // 2),
+            nn.ReLU(inplace=True),
+            nn.Conv3d(out_dim // 2, in_chan, kernel_size=1)
         )
 
 
@@ -68,10 +72,10 @@ class Fusion_Preds(nn.Module):
         B, N, C = tokens.shape
         patch_dim = round(N ** (1/3)) 
         tokens_reshaped = tokens.permute(0, 2, 1).contiguous().view(B, C, patch_dim, patch_dim, patch_dim)
-        tokens_up = self.up(tokens_reshaped)
+        tokens_en = self.tokens_encoder(tokens_reshaped)
 
-        pred_cat = torch.cat([tokens_up, pred_r], dim=1)
-        pred = self.decoder(pred_cat)
+        pred_cat = torch.cat([tokens_en, pred_r], dim=1)
+        pred = self.out(pred_cat)
 
         return pred    
 
