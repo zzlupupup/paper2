@@ -1,4 +1,6 @@
 import torch
+import torch.nn.functional as F
+from losses import dice_loss
 from torch import nn
 from monai.networks.blocks import PatchEmbeddingBlock
 
@@ -17,7 +19,6 @@ class Fusion_Preds(nn.Module):
         )
 
         self.Q_norm = nn.LayerNorm(fea_dim)
-        self.KV_norm = nn.LayerNorm(fea_dim)
         self.ff_norm = nn.LayerNorm(fea_dim)
 
         self.ffn = nn.Sequential(
@@ -56,10 +57,11 @@ class Fusion_Preds(nn.Module):
         embed_r = self.patch_embed(pred_r)
 
         Q = self.Q_norm(embed_l)
-        K = self.KV_norm(embed_r)
+        K = embed_r
         V = K
 
         MHA_tokens, _ = self.MHA(Q, K, V, need_weights=False)
+        MHA_tokens = MHA_tokens + V
         MHA_tokens = self.ff_norm(MHA_tokens)
         tokens = self.ffn(MHA_tokens)
 
@@ -71,6 +73,15 @@ class Fusion_Preds(nn.Module):
         pred_cat = torch.cat([tokens_up, pred_r], dim=1)
         pred = self.decoder(pred_cat)
 
-        return pred
-    
+        return pred    
 
+
+def ce_dice_loss(pred, label, ce_weights):
+
+    pred_soft = torch.softmax(pred, dim=1)
+
+    ce_loss = F.cross_entropy(pred, label, weight=ce_weights)
+    dc_loss = 0.5*dice_loss(pred_soft[:, 1, :, :, :], label == 1) + \
+                dice_loss(pred_soft[:, 2, :, :, :], label == 2)
+    
+    return ce_loss + dc_loss

@@ -22,7 +22,7 @@ from utils import ramps, losses
 from dataloaders.lung import Lung, TwoStreamBatchSampler
 from utils.test_3d_patch import test_all_case_Lung
 from utils.data_util import get_transform
-from utils.hn_util import Fusion_Preds
+from utils.hn_util import Fusion_Preds, ce_dice_loss
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--root_path', type=str, default='../data/LUNG', help='Name of Experiment')
@@ -32,12 +32,13 @@ parser.add_argument('--batch_size', type=int, default=4, help='batch_size per gp
 parser.add_argument('--labeled_bs', type=int, default=2, help='labeled_batch_size per gpu')
 parser.add_argument('--lr_l', type=float,  default=0.01, help='lr_l')
 parser.add_argument('--lr_r', type=float,  default=0.0001, help='lr_r')
+parser.add_argument('--lr_f', type=float,  default=0.0001, help='lr_f')
 parser.add_argument('--deterministic', type=int,  default=1, help='whether use deterministic training')
 parser.add_argument('--seed', type=int,  default=1337, help='random seed')
 parser.add_argument('--gpu', type=str,  default='0', help='GPU to use')
 ### costs
-parser.add_argument('--cps_weight', type=float,  default=0.1, help='cps_weight')
-parser.add_argument('--cps_rampup', type=float,  default=40.0, help='cps_rampup')
+parser.add_argument('--fusion_weight', type=float,  default=0.1, help='fusion_weight')
+parser.add_argument('--fusion_rampup', type=float,  default=40.0, help='fusion_rampup')
 args = parser.parse_args()
 
 train_data_path = args.root_path
@@ -50,6 +51,7 @@ labeled_bs = args.labeled_bs
 
 lr_l = args.lr_l
 lr_r = args.lr_r
+lr_f = args.lr_f
 
 if args.deterministic:
     cudnn.benchmark = False
@@ -64,7 +66,7 @@ patch_size = (64, 64, 64)
 
 def get_current_consistency_weight(epoch):
     # Consistency ramp-up from https://arxiv.org/abs/1610.02242
-    return args.cps_weight * ramps.sigmoid_rampup(epoch, args.cps_rampup)
+    return args.fusion_weight * ramps.sigmoid_rampup(epoch, args.fusion_rampup)
 
 def worker_init_fn(worker_id):
     random.seed(args.seed+worker_id)
@@ -107,6 +109,7 @@ if __name__ == "__main__":
 
     optimizer_l = optim.SGD(model_l.parameters(), lr=lr_l, momentum=0.9, weight_decay=0.0001)
     optimizer_r = optim.AdamW(model_r.parameters(), lr=lr_r, weight_decay=0.00001)
+    optimizer_f = optim.AdamW(fusion.parameters(), lr=lr_f, weight_decay=0.00001)
 
     writer = SummaryWriter(snapshot_path+'/log')
     logging.info("{} itertations per epoch".format(len(trainloader)))
@@ -130,61 +133,56 @@ if __name__ == "__main__":
             outputs_l = model_l(volume_batch)
             outputs_r = model_r(volume_batch)
             #sup loss
-            sup_ce_l = F.cross_entropy(outputs_l[:labeled_bs], label_batch[:labeled_bs], weight=ce_weights)
-            sup_ce_r = F.cross_entropy(outputs_r[:labeled_bs], label_batch[:labeled_bs], weight=ce_weights)
+            sup_l = ce_dice_loss(outputs_l[:labeled_bs], label_batch[:labeled_bs], ce_weights)
+            sup_r = ce_dice_loss(outputs_r[:labeled_bs], label_batch[:labeled_bs], ce_weights)
+            sup_loss = 0.5*(sup_l + sup_r)
 
-            outputs_soft_l = F.softmax(outputs_l, dim=1)
-            outputs_soft_r = F.softmax(outputs_r, dim=1)
-
-            sup_dice_l = 0.5*losses.dice_loss(outputs_soft_l[:labeled_bs, 1, :, :, :], label_batch[:labeled_bs] == 1) + losses.dice_loss(outputs_soft_l[:labeled_bs, 2, :, :, :], label_batch[:labeled_bs] == 2)
-            sup_dice_r = 0.5*losses.dice_loss(outputs_soft_r[:labeled_bs, 1, :, :, :], label_batch[:labeled_bs] == 1) + losses.dice_loss(outputs_soft_r[:labeled_bs, 2, :, :, :], label_batch[:labeled_bs] == 2)
+            #fusion_loss
+            all_fusion = fusion(outputs_l, outputs_r) 
+            unlabel_fusion_soft = torch.softmax(all_fusion[labeled_bs:], dim=1)
+            unlabel_fusion_pseudo = torch.argmax(unlabel_fusion_soft, dim=1)
+                #fusion_sup loss
+            fusion_sup = ce_dice_loss(all_fusion[:labeled_bs], label_batch[:labeled_bs], ce_weights)
+                #fusion_unsup loss
+            fusion_unsup_l = ce_dice_loss(outputs_l[labeled_bs:], unlabel_fusion_pseudo, ce_weights)
+            fusion_unsup_r = ce_dice_loss(outputs_r[labeled_bs:], unlabel_fusion_pseudo, ce_weights)
+            fusion_loss = 0.5 * ( 0.1 * fusion_sup + fusion_unsup_l + fusion_unsup_r)
             
-            sup_loss = 0.5*(sup_ce_l + sup_ce_r + sup_dice_l + sup_dice_r)
-
-            #cps_loss
-            unlabel_fusion = fusion(outputs_l[labeled_bs:], outputs_r[labeled_bs:]) 
-            unlabel_fusion = torch.softmax(unlabel_fusion, dim=1)
-            unlabel_fusion = torch.argmax(unlabel_fusion, dim=1)
-
-            cps_ce_l = F.cross_entropy(outputs_l[labeled_bs:], unlabel_fusion, weight=ce_weights)
-            cps_ce_r = F.cross_entropy(outputs_r[labeled_bs:], unlabel_fusion, weight=ce_weights)
-            
-            cps_dice_l = 0.5 * losses.dice_loss(outputs_soft_l[labeled_bs:, 1, ...], unlabel_fusion == 1) + losses.dice_loss(outputs_soft_l[labeled_bs:, 2, ...], unlabel_fusion == 2)
-            cps_dice_r = 0.5 * losses.dice_loss(outputs_soft_r[labeled_bs:, 1, ...], unlabel_fusion == 1) + losses.dice_loss(outputs_soft_r[labeled_bs:, 2, ...], unlabel_fusion == 2)
-            
-            cps_loss = 0.5 * (cps_ce_l + cps_ce_r + cps_dice_l + cps_dice_r)
-
             #all_loss 
-            cps_weight = get_current_consistency_weight(iter_num//150)
-            loss = sup_loss + cps_weight * cps_loss
+            fusion_weight = get_current_consistency_weight(iter_num//150)
+            loss = sup_loss + fusion_weight * fusion_loss
 
             optimizer_l.zero_grad()
             optimizer_r.zero_grad()
+            optimizer_f.zero_grad()
             loss.backward()
             optimizer_l.step()
             optimizer_r.step()
+            optimizer_f.step()
 
             iter_num = iter_num + 1
             writer.add_scalar('loss/loss', loss.item(), iter_num)
 
-            logging.info(f'iteration{iter_num}: loss={loss.item():.4f}, sup_loss={sup_loss.item():.4f}, cps_loss={cps_loss.item():.4f}, cps_weight={cps_weight:.4f}')
+            logging.info(f'iteration{iter_num}: loss={loss.item():.4f}, sup_loss={sup_loss.item():.4f}, cps_loss={fusion_loss.item():.4f}, cps_weight={fusion_weight:.4f}')
 
             if iter_num % 100 == 0:
 
                 l_img_show = volume_batch[0, 0, :, :, 40].detach().cpu().numpy()
                 l_label_show = label_batch[0, :, :, 40].detach().cpu().numpy()
-                l_output_show = torch.argmax(outputs_soft_r[0, :, :, :, 40], dim=0).detach().cpu().numpy()
+                l_r_show = torch.argmax(torch.softmax(outputs_r[0, :, :, :, 40], dim=0), dim=0).detach().cpu().numpy()
+                l_fusion_show = torch.argmax(torch.softmax(all_fusion[0, :, :, :, 40], dim=0), dim=0).detach().cpu().numpy()
 
                 u_img_show = volume_batch[labeled_bs, 0, :, :, 40].detach().cpu().numpy()
-                u_output_l = unlabel_fusion[0, :, :, 40].cpu().numpy()
+                u_fusion_show = unlabel_fusion_pseudo[0, :, :, 40].detach().cpu().numpy()
 
                 fig, axes = plt.subplots(2, 3, figsize=(12, 8))
                 axes[0,0].imshow(l_img_show, cmap='gray')
                 axes[0,1].imshow(l_label_show, cmap='gray')
-                axes[0,2].imshow(l_output_show, cmap='gray')
+                axes[0,2].imshow(l_r_show, cmap='gray')
+                axes[1,0].imshow(l_fusion_show, cmap='gray')
 
-                axes[1,0].imshow(u_img_show, cmap='gray')
-                axes[1,1].imshow(u_output_l, cmap='gray')
+                axes[1,1].imshow(u_img_show, cmap='gray')
+                axes[1,2].imshow(u_fusion_show, cmap='gray')
 
                 for ax in axes.ravel():
                     ax.set_axis_off()
