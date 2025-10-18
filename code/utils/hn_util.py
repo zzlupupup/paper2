@@ -1,6 +1,6 @@
 import torch
 import torch.nn.functional as F
-from losses import dice_loss
+from utils.losses import dice_loss
 from torch import nn
 from monai.networks.blocks import PatchEmbeddingBlock
 
@@ -49,7 +49,7 @@ class Fusion_Preds(nn.Module):
         out_dim = (fea_dim // 4 ) + in_chan
         self.out = nn.Sequential(
             nn.Conv3d(out_dim, out_dim // 2, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm3d(fea_dim // 2),
+            nn.BatchNorm3d(out_dim // 2),
             nn.ReLU(inplace=True),
             nn.Conv3d(out_dim // 2, in_chan, kernel_size=1)
         )

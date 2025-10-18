@@ -106,6 +106,7 @@ if __name__ == "__main__":
 
     model_l.train()
     model_r.train()
+    fusion.train()
 
     optimizer_l = optim.SGD(model_l.parameters(), lr=lr_l, momentum=0.9, weight_decay=0.0001)
     optimizer_r = optim.AdamW(model_r.parameters(), lr=lr_r, weight_decay=0.00001)
@@ -163,7 +164,7 @@ if __name__ == "__main__":
             iter_num = iter_num + 1
             writer.add_scalar('loss/loss', loss.item(), iter_num)
 
-            logging.info(f'iteration{iter_num}: loss={loss.item():.4f}, sup_loss={sup_loss.item():.4f}, cps_loss={fusion_loss.item():.4f}, cps_weight={fusion_weight:.4f}')
+            logging.info(f'iteration{iter_num}: loss={loss.item():.4f}, sup_loss={sup_loss.item():.4f}, fusion_loss={fusion_loss.item():.4f}, fusion_weight={fusion_weight:.4f}')
 
             if iter_num % 100 == 0:
 
