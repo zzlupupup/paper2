@@ -22,7 +22,6 @@ from dataloaders.lung import Lung, TwoStreamBatchSampler
 from utils.test_3d_patch import test_all_case_Lung_plus
 from utils.data_util import get_transform
 
-
 parser = argparse.ArgumentParser()
 parser.add_argument('--root_path', type=str, default='../data/LUNG', help='Name of Experiment')
 parser.add_argument('--exp', type=str,  default='HN_Fusion', help='model_name')
