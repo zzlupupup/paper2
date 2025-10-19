@@ -95,3 +95,13 @@ def symmetric_mse_loss(input1, input2):
     """
     assert input1.size() == input2.size()
     return torch.mean((input1 - input2)**2)
+
+def ce_dice_loss(pred, label, ce_weights):
+
+    pred_soft = torch.softmax(pred, dim=1)
+
+    ce_loss = F.cross_entropy(pred, label, weight=ce_weights)
+    dc_loss = 0.5*dice_loss(pred_soft[:, 1, :, :, :], label == 1) + \
+                dice_loss(pred_soft[:, 2, :, :, :], label == 2)
+    
+    return ce_loss + dc_loss

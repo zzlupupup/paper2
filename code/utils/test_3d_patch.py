@@ -79,7 +79,7 @@ def test_single_case(net, image, stride_xy, stride_z, patch_size, num_classes=3)
         score_map = score_map[:,wl_pad:wl_pad+w,hl_pad:hl_pad+h,dl_pad:dl_pad+d]
     return label_map, score_map
 
-def test_single_case_plus(model_l, model_r, image, stride_xy, stride_z, patch_size, num_classes=3):
+def test_single_case_plus(model, image, stride_xy, stride_z, patch_size, num_classes=3):
     w, h, d = image.shape
     add_pad = False
     if w < patch_size[0]:
@@ -122,10 +122,8 @@ def test_single_case_plus(model_l, model_r, image, stride_xy, stride_z, patch_si
                 test_patch = torch.from_numpy(test_patch).cuda()
 
                 with torch.no_grad():
-                    y1_l = model_l(test_patch)
-                    y1_r = model_r(test_patch)
-                    y1 = (y1_l + y1_r) / 2
-                    y = F.softmax(y1, dim=1)
+                    y,_,_ = model(test_patch)
+                    y = F.softmax(y, dim=1)
 
                 y = y.cpu().data.numpy()
                 y = y[0,:,:,:,:]
@@ -229,7 +227,7 @@ def test_all_case_Lung(model, image_list, num_classes=3, patch_size=(64, 64, 64)
 
     return cls1_avg_metric, cls2_avg_metric
 
-def test_all_case_Lung_plus(model_l, model_r, image_list, num_classes=3, patch_size=(64, 64, 64), stride_xy=32, stride_z=32, save_result=False, test_save_path=None, preproc_fn=None, metric_detail=1, nms=0, metric_txt_save=0):
+def test_all_case_Lung_plus(model, image_list, num_classes=3, patch_size=(64, 64, 64), stride_xy=32, stride_z=32, save_result=False, test_save_path=None, preproc_fn=None, metric_detail=1, nms=0, metric_txt_save=0):
     imagLoader = Compose([
         LoadImaged(keys=['image', 'label'], ensure_channel_first=True),
         Orientationd(keys=["image", "label"], axcodes="RAS", labels=(('L', 'R'), ('P', 'A'), ('I', 'S'))),
@@ -260,7 +258,7 @@ def test_all_case_Lung_plus(model_l, model_r, image_list, num_classes=3, patch_s
             image = preproc_fn(image)
 
         infer_time_start = time.time()
-        prediction, score_map = test_single_case_plus(model_l, model_r, image, stride_xy, stride_z, patch_size, num_classes=num_classes)
+        prediction, score_map = test_single_case_plus(model, image, stride_xy, stride_z, patch_size, num_classes=num_classes)
         infer_time_end = time.time()
 
         if nms:

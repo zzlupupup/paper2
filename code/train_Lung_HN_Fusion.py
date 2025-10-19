@@ -16,23 +16,20 @@ from tqdm import tqdm
 from pathlib import Path
 from torch.utils.data import DataLoader
 from tensorboardX import SummaryWriter
-from networks.vnet import VNet
-from monai.networks.nets import SwinUNETR
+from networks.hn import HN
 from utils import ramps, losses
 from dataloaders.lung import Lung, TwoStreamBatchSampler
-from utils.test_3d_patch import test_all_case_Lung
+from utils.test_3d_patch import test_all_case_Lung_plus
 from utils.data_util import get_transform
-from utils.hn_util import Fusion_Preds, ce_dice_loss
+
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--root_path', type=str, default='../data/LUNG', help='Name of Experiment')
 parser.add_argument('--exp', type=str,  default='HN_Fusion', help='model_name')
 parser.add_argument('--max_iterations', type=int,  default=6000, help='maximum epoch number to train')
-parser.add_argument('--batch_size', type=int, default=4, help='batch_size per gpu')
-parser.add_argument('--labeled_bs', type=int, default=2, help='labeled_batch_size per gpu')
-parser.add_argument('--lr_l', type=float,  default=0.01, help='lr_l')
-parser.add_argument('--lr_r', type=float,  default=0.0001, help='lr_r')
-parser.add_argument('--lr_f', type=float,  default=0.0001, help='lr_f')
+parser.add_argument('--batch_size', type=int, default=2, help='batch_size per gpu')
+parser.add_argument('--labeled_bs', type=int, default=1, help='labeled_batch_size per gpu')
+parser.add_argument('--lr', type=float,  default=0.0001, help='lr')
 parser.add_argument('--deterministic', type=int,  default=1, help='whether use deterministic training')
 parser.add_argument('--seed', type=int,  default=1337, help='random seed')
 parser.add_argument('--gpu', type=str,  default='0', help='GPU to use')
@@ -49,9 +46,7 @@ batch_size = args.batch_size
 max_iterations = args.max_iterations
 labeled_bs = args.labeled_bs
 
-lr_l = args.lr_l
-lr_r = args.lr_r
-lr_f = args.lr_f
+lr = args.lr
 
 if args.deterministic:
     cudnn.benchmark = False
@@ -85,10 +80,6 @@ if __name__ == "__main__":
     logging.getLogger().addHandler(logging.StreamHandler(sys.stdout))
     logging.info(str(args))
 
-    model_l = VNet(n_channels=1, n_classes=num_classes, normalization='batchnorm', has_dropout=True).cuda()
-    model_r = SwinUNETR(in_channels=1, out_channels=num_classes).cuda()
-    fusion = Fusion_Preds().cuda()
-
     label_transform, unlabel_transform = get_transform()
     db_train = Lung(base_dir=train_data_path,
                     split='train',
@@ -102,15 +93,11 @@ if __name__ == "__main__":
     unlabeled_idxs = list(range(11, 54))
     batch_sampler = TwoStreamBatchSampler(labeled_idxs, unlabeled_idxs, batch_size, batch_size-labeled_bs)
 
-    trainloader = DataLoader(db_train, batch_sampler=batch_sampler, num_workers=4, pin_memory=True,worker_init_fn=worker_init_fn)
+    trainloader = DataLoader(db_train, batch_sampler=batch_sampler, num_workers=2, pin_memory=True,worker_init_fn=worker_init_fn)
 
-    model_l.train()
-    model_r.train()
-    fusion.train()
-
-    optimizer_l = optim.SGD(model_l.parameters(), lr=lr_l, momentum=0.9, weight_decay=0.0001)
-    optimizer_r = optim.AdamW(model_r.parameters(), lr=lr_r, weight_decay=0.00001)
-    optimizer_f = optim.AdamW(fusion.parameters(), lr=lr_f, weight_decay=0.00001)
+    net = HN().cuda()
+    net.train()
+    optimizer = optim.AdamW(net.parameters(), lr=lr, weight_decay=0.00001)
 
     writer = SummaryWriter(snapshot_path+'/log')
     logging.info("{} itertations per epoch".format(len(trainloader)))
@@ -130,60 +117,51 @@ if __name__ == "__main__":
         for i_batch, sampled_batch in enumerate(trainloader):
             volume_batch, label_batch = sampled_batch['image'], sampled_batch['label']
             volume_batch, label_batch = volume_batch.cuda(), label_batch.cuda()
-            
-            outputs_l = model_l(volume_batch)
-            outputs_r = model_r(volume_batch)
-            #sup loss
-            sup_l = ce_dice_loss(outputs_l[:labeled_bs], label_batch[:labeled_bs], ce_weights)
-            sup_r = ce_dice_loss(outputs_r[:labeled_bs], label_batch[:labeled_bs], ce_weights)
-            sup_loss = 0.5*(sup_l + sup_r)
+            #sup_loss
+            pred_fusion, pred_l, pred_r = net(volume_batch)
+            sup_loss_fusion = losses.ce_dice_loss(pred_fusion[:labeled_bs], label_batch[:labeled_bs], ce_weights)
+            sup_loss = 0.5 * sup_loss_fusion
 
-            #fusion_loss
-            all_fusion = fusion(outputs_l, outputs_r) 
-            unlabel_fusion_soft = torch.softmax(all_fusion[labeled_bs:], dim=1)
-            unlabel_fusion_pseudo = torch.argmax(unlabel_fusion_soft, dim=1)
-                #fusion_sup loss
-            fusion_sup = ce_dice_loss(all_fusion[:labeled_bs], label_batch[:labeled_bs], ce_weights)
-                #fusion_unsup loss
-            fusion_unsup_l = ce_dice_loss(outputs_l[labeled_bs:], unlabel_fusion_pseudo, ce_weights)
-            fusion_unsup_r = ce_dice_loss(outputs_r[labeled_bs:], unlabel_fusion_pseudo, ce_weights)
-            fusion_loss = 0.5 * ( 0.1 * fusion_sup + fusion_unsup_l + fusion_unsup_r)
+            #unsup_loss MSE
+            unsup_loss_l = torch.mean(losses.softmax_mse_loss(pred_l[labeled_bs:], pred_fusion[labeled_bs:]))
+            unsup_loss_r = torch.mean(losses.softmax_mse_loss(pred_r[labeled_bs:], pred_fusion[labeled_bs:]))
+            unsup_loss = unsup_loss_l + unsup_loss_r
             
             #all_loss 
             fusion_weight = get_current_consistency_weight(iter_num//150)
-            loss = sup_loss + fusion_weight * fusion_loss
+            loss = sup_loss + fusion_weight * unsup_loss
 
-            optimizer_l.zero_grad()
-            optimizer_r.zero_grad()
-            optimizer_f.zero_grad()
+            optimizer.zero_grad()
             loss.backward()
-            optimizer_l.step()
-            optimizer_r.step()
-            optimizer_f.step()
+            optimizer.step()
 
             iter_num = iter_num + 1
-            writer.add_scalar('loss/loss', loss.item(), iter_num)
+            logging.info(f'iteration{iter_num}: loss={loss.item():.4f}, sup_loss={sup_loss.item():.4f}, unsup_loss_l={unsup_loss_l.item():.4f}, unsup_loss_r={unsup_loss_r.item():.4f}, unsup_loss={unsup_loss.item():.4f},fusion_weight={fusion_weight:.4f}')
+            if iter_num % 10 == 0:
 
-            logging.info(f'iteration{iter_num}: loss={loss.item():.4f}, sup_loss={sup_loss.item():.4f}, fusion_loss={fusion_loss.item():.4f}, fusion_weight={fusion_weight:.4f}')
+                label_img = volume_batch[0, 0, :, :, 32].detach().cpu().numpy()
+                label_label = label_batch[0, :, :, 32].detach().cpu().numpy()
+                label_pred_l = torch.argmax(torch.softmax(pred_l[0, :, :, :, 32], dim=0), dim=0).detach().cpu().numpy()
+                label_pred_r = torch.argmax(torch.softmax(pred_r[0, :, :, :, 32], dim=0), dim=0).detach().cpu().numpy()
+                label_pred_fusion = torch.argmax(torch.softmax(pred_fusion[0, :, :, :, 32], dim=0), dim=0).detach().cpu().numpy()
+                
+                unlabel_img = volume_batch[labeled_bs, 0, :, :, 32].detach().cpu().numpy()
+                unlabel_pred_l = torch.argmax(torch.softmax(pred_l[labeled_bs, :, :, :, 32], dim=0), dim=0).detach().cpu().numpy()
+                unlabel_pred_r = torch.argmax(torch.softmax(pred_r[labeled_bs, :, :, :, 32], dim=0), dim=0).detach().cpu().numpy()
+                unlabel_pred_fusion = torch.argmax(torch.softmax(pred_fusion[labeled_bs, :, :, :, 32], dim=0), dim=0).detach().cpu().numpy()
 
-            if iter_num % 100 == 0:
+                fig, axes = plt.subplots(2, 5, figsize=(12, 8))
+                axes[0,0].imshow(label_img, cmap='gray')
+                axes[0,1].imshow(label_pred_l, cmap='gray')
+                axes[0,2].imshow(label_pred_r, cmap='gray')
+                axes[0,3].imshow(label_pred_fusion, cmap='gray')
+                axes[0,4].imshow(label_label, cmap='gray')
 
-                l_img_show = volume_batch[0, 0, :, :, 40].detach().cpu().numpy()
-                l_label_show = label_batch[0, :, :, 40].detach().cpu().numpy()
-                l_r_show = torch.argmax(torch.softmax(outputs_r[0, :, :, :, 40], dim=0), dim=0).detach().cpu().numpy()
-                l_fusion_show = torch.argmax(torch.softmax(all_fusion[0, :, :, :, 40], dim=0), dim=0).detach().cpu().numpy()
-
-                u_img_show = volume_batch[labeled_bs, 0, :, :, 40].detach().cpu().numpy()
-                u_fusion_show = unlabel_fusion_pseudo[0, :, :, 40].detach().cpu().numpy()
-
-                fig, axes = plt.subplots(2, 3, figsize=(12, 8))
-                axes[0,0].imshow(l_img_show, cmap='gray')
-                axes[0,1].imshow(l_label_show, cmap='gray')
-                axes[0,2].imshow(l_r_show, cmap='gray')
-                axes[1,0].imshow(l_fusion_show, cmap='gray')
-
-                axes[1,1].imshow(u_img_show, cmap='gray')
-                axes[1,2].imshow(u_fusion_show, cmap='gray')
+                axes[1,0].imshow(unlabel_img, cmap='gray')
+                axes[1,1].imshow(unlabel_pred_l, cmap='gray')
+                axes[1,2].imshow(unlabel_pred_r, cmap='gray')
+                axes[1,3].imshow(unlabel_pred_fusion, cmap='gray')
+                axes[1,4].imshow(unlabel_pred_fusion, cmap='gray')
 
                 for ax in axes.ravel():
                     ax.set_axis_off()
@@ -191,21 +169,19 @@ if __name__ == "__main__":
                 fig.savefig(fig_path / (f'train_fig.png'))
                 plt.close()
 
-            if iter_num % 200 == 0:
+            if iter_num % 10 == 0:
                 logging.info("start validation")
-                model_r.eval()
+                net.eval()
                 with torch.no_grad():
-                    cls1_avg_metric, cls2_avg_metric = test_all_case_Lung(model_r, test_image_list, metric_detail=1)
+                    cls1_avg_metric, cls2_avg_metric = test_all_case_Lung_plus(net, test_image_list, metric_detail=1)
 
                 if cls1_avg_metric[0] >= cls1_best and cls2_avg_metric[0] >= cls2_best:
 
                     cls1_best = cls1_avg_metric[0]
                     cls2_best = cls2_avg_metric[0]
 
-                    save_mode_path_l = os.path.join(snapshot_path, 'best_model_l.pth')
-                    save_mode_path_r = os.path.join(snapshot_path, 'best_model_r.pth')
-                    torch.save(model_l.state_dict(), save_mode_path_l)
-                    torch.save(model_r.state_dict(), save_mode_path_r)
+                    save_mode_path = os.path.join(snapshot_path, 'best_model.pth')
+                    torch.save(net.state_dict(), save_mode_path)
                     logging.info("=============save best model===============")
 
                 avg_x.append(iter_num)
@@ -225,15 +201,12 @@ if __name__ == "__main__":
                 logging.info(f'cls1_avg_metric: dice={cls1_avg_metric[0]:.4f},  cls2_avg_metric: dice={cls2_avg_metric[0]:.4f}')
                 logging.info(f'cls1_best={cls1_best:.4f},  cls2_best={cls2_best:.4f}')
 
-                model_r.train()
+                net.train()
                 logging.info("end validation")
 
             if iter_num % 1000 == 0:
-                save_mode_path_l = os.path.join(snapshot_path, 'iter_' + str(iter_num) + '_l.pth')
-                torch.save(model_l.state_dict(), save_mode_path_l)
-
-                save_mode_path_r = os.path.join(snapshot_path, 'iter_' + str(iter_num) + '_r.pth')
-                torch.save(model_r.state_dict(), save_mode_path_r)
+                save_mode_path = os.path.join(snapshot_path, 'iter_' + str(iter_num) + '.pth')
+                torch.save(net.state_dict(), save_mode_path)
                 logging.info("save model ")
 
             if iter_num >= max_iterations:
@@ -242,10 +215,8 @@ if __name__ == "__main__":
         if iter_num >= max_iterations:
             break
 
-    save_mode_path_l = os.path.join(snapshot_path, 'iter_'+str(max_iterations)+'_l.pth')
-    torch.save(model_l.state_dict(), save_mode_path_l)
-    save_mode_path_r = os.path.join(snapshot_path, 'iter_'+str(max_iterations)+'_r.pth')
-    torch.save(model_r.state_dict(), save_mode_path_r)
+    save_mode_path = os.path.join(snapshot_path, 'iter_'+str(max_iterations)+'_l.pth')
+    torch.save(net.state_dict(), save_mode_path)
 
     with open(snapshot_path + '/dif.pkl', 'wb') as f:
         pickle.dump([avg_x, avg_cls1, avg_cls2], f)
