@@ -33,8 +33,8 @@ parser.add_argument('--deterministic', type=int,  default=1, help='whether use d
 parser.add_argument('--seed', type=int,  default=1337, help='random seed')
 parser.add_argument('--gpu', type=str,  default='0', help='GPU to use')
 ### costs
-parser.add_argument('--fusion_weight', type=float,  default=0.1, help='fusion_weight')
-parser.add_argument('--fusion_rampup', type=float,  default=40.0, help='fusion_rampup')
+parser.add_argument('--unsup_weight', type=float,  default=0.1, help='unsup_weight')
+parser.add_argument('--unsup_rampup', type=float,  default=40.0, help='unsup_rampup')
 args = parser.parse_args()
 
 train_data_path = args.root_path
@@ -60,7 +60,7 @@ patch_size = (64, 64, 64)
 
 def get_current_consistency_weight(epoch):
     # Consistency ramp-up from https://arxiv.org/abs/1610.02242
-    return args.fusion_weight * ramps.sigmoid_rampup(epoch, args.fusion_rampup)
+    return args.unsup_weight * ramps.sigmoid_rampup(epoch, args.unsup_rampup)
 
 def worker_init_fn(worker_id):
     random.seed(args.seed+worker_id)
@@ -119,7 +119,9 @@ if __name__ == "__main__":
             #sup_loss
             pred_fusion, pred_l, pred_r = net(volume_batch)
             sup_loss_fusion = losses.ce_dice_loss(pred_fusion[:labeled_bs], label_batch[:labeled_bs], ce_weights)
-            sup_loss = 0.5 * sup_loss_fusion
+            sup_loss_l = losses.ce_dice_loss(pred_l[:labeled_bs], label_batch[:labeled_bs], ce_weights)
+            sup_loss_r = losses.ce_dice_loss(pred_r[:labeled_bs], label_batch[:labeled_bs], ce_weights)
+            sup_loss = 0.5 * (sup_loss_fusion+ sup_loss_l + sup_loss_r)
 
             #unsup_loss MSE
             unsup_loss_l = torch.mean(losses.softmax_mse_loss(pred_l[labeled_bs:], pred_fusion[labeled_bs:]))
@@ -127,16 +129,16 @@ if __name__ == "__main__":
             unsup_loss = unsup_loss_l + unsup_loss_r
             
             #all_loss 
-            fusion_weight = get_current_consistency_weight(iter_num//150)
-            loss = sup_loss + fusion_weight * unsup_loss
+            unsup_weight = get_current_consistency_weight(iter_num//150)
+            loss = sup_loss + unsup_weight * unsup_loss
 
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
 
             iter_num = iter_num + 1
-            logging.info(f'iteration{iter_num}: loss={loss.item():.4f}, sup_loss={sup_loss.item():.4f}, unsup_loss_l={unsup_loss_l.item():.4f}, unsup_loss_r={unsup_loss_r.item():.4f}, unsup_loss={unsup_loss.item():.4f},fusion_weight={fusion_weight:.4f}')
-            if iter_num % 10 == 0:
+            logging.info(f'iteration{iter_num}: loss={loss.item():.4f}, sup_loss={sup_loss.item():.4f}, unsup_loss_l={unsup_loss_l.item():.4f}, unsup_loss_r={unsup_loss_r.item():.4f}, unsup_loss={unsup_loss.item():.4f},unsup_weight={unsup_weight:.4f}')
+            if iter_num % 100 == 0:
 
                 label_img = volume_batch[0, 0, :, :, 32].detach().cpu().numpy()
                 label_label = label_batch[0, :, :, 32].detach().cpu().numpy()
@@ -168,7 +170,7 @@ if __name__ == "__main__":
                 fig.savefig(fig_path / (f'train_fig.png'))
                 plt.close()
 
-            if iter_num % 10 == 0:
+            if iter_num % 200 == 0:
                 logging.info("start validation")
                 net.eval()
                 with torch.no_grad():
