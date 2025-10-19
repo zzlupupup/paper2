@@ -19,6 +19,7 @@ class Fusion_Preds(nn.Module):
         )
 
         self.Q_norm = nn.LayerNorm(fea_dim)
+        self.KV_norm = nn.LayerNorm(fea_dim)
         self.ff_norm = nn.LayerNorm(fea_dim)
 
         self.ffn = nn.Sequential(
@@ -61,7 +62,7 @@ class Fusion_Preds(nn.Module):
         embed_r = self.patch_embed(pred_r)
 
         Q = self.Q_norm(embed_l)
-        K = embed_r
+        K = self.KV_norm(embed_r)
         V = K
 
         MHA_tokens, _ = self.MHA(Q, K, V, need_weights=False)
