@@ -33,7 +33,7 @@ parser.add_argument('--deterministic', type=int,  default=1, help='whether use d
 parser.add_argument('--seed', type=int,  default=1337, help='random seed')
 parser.add_argument('--gpu', type=str,  default='0', help='GPU to use')
 ### costs
-parser.add_argument('--unsup_weight', type=float,  default=0.1, help='unsup_weight')
+parser.add_argument('--unsup_weight', type=float,  default=1.0, help='unsup_weight')
 parser.add_argument('--unsup_rampup', type=float,  default=40.0, help='unsup_rampup')
 args = parser.parse_args()
 
@@ -92,7 +92,7 @@ if __name__ == "__main__":
     unlabeled_idxs = list(range(11, 54))
     batch_sampler = TwoStreamBatchSampler(labeled_idxs, unlabeled_idxs, batch_size, batch_size-labeled_bs)
 
-    trainloader = DataLoader(db_train, batch_sampler=batch_sampler, num_workers=2, pin_memory=True,worker_init_fn=worker_init_fn)
+    trainloader = DataLoader(db_train, batch_sampler=batch_sampler, num_workers=14, pin_memory=True,worker_init_fn=worker_init_fn)
 
     net = HN().cuda()
     net.train()
@@ -108,6 +108,7 @@ if __name__ == "__main__":
     avg_cls1 = []
     avg_cls2 = []
 
+    best_metric_sum = 0.0
     cls1_best = 0.0
     cls2_best = 0.0
 
@@ -121,7 +122,7 @@ if __name__ == "__main__":
             sup_loss_fusion = losses.ce_dice_loss(pred_fusion[:labeled_bs], label_batch[:labeled_bs], ce_weights)
             sup_loss_l = losses.ce_dice_loss(pred_l[:labeled_bs], label_batch[:labeled_bs], ce_weights)
             sup_loss_r = losses.ce_dice_loss(pred_r[:labeled_bs], label_batch[:labeled_bs], ce_weights)
-            sup_loss = 0.5 * (sup_loss_fusion+ sup_loss_l + sup_loss_r)
+            sup_loss = 0.2 * sup_loss_fusion+ 0.4 * (sup_loss_l + sup_loss_r)
 
             #unsup_loss MSE
             unsup_loss_l = torch.mean(losses.softmax_mse_loss(pred_l[labeled_bs:], pred_fusion[labeled_bs:]))
@@ -137,7 +138,7 @@ if __name__ == "__main__":
             optimizer.step()
 
             iter_num = iter_num + 1
-            logging.info(f'iteration{iter_num}: loss={loss.item():.4f}, sup_loss={sup_loss.item():.4f}, unsup_loss_l={unsup_loss_l.item():.4f}, unsup_loss_r={unsup_loss_r.item():.4f}, unsup_loss={unsup_loss.item():.4f},unsup_weight={unsup_weight:.4f}')
+            logging.info(f'iteration{iter_num}: loss={loss.item():.4f}, sup_loss={sup_loss.item():.4f}, unsup_loss_l={unsup_loss_l.item():.4f}, unsup_loss_r={unsup_loss_r.item():.4f}, unsup_loss={unsup_loss.item():.4f}, unsup_weight={unsup_weight:.4f}')
             if iter_num % 100 == 0:
 
                 label_img = volume_batch[0, 0, :, :, 32].detach().cpu().numpy()
@@ -167,7 +168,7 @@ if __name__ == "__main__":
                 for ax in axes.ravel():
                     ax.set_axis_off()
                 fig.tight_layout(pad=1)
-                fig.savefig(fig_path / (f'train_fig.png'))
+                fig.savefig(fig_path / (f'train{iter_num}.png'))
                 plt.close()
 
             if iter_num % 200 == 0:
@@ -176,8 +177,11 @@ if __name__ == "__main__":
                 with torch.no_grad():
                     cls1_avg_metric, cls2_avg_metric = test_all_case_Lung_plus(net, test_image_list, metric_detail=1)
 
-                if cls1_avg_metric[0] >= cls1_best and cls2_avg_metric[0] >= cls2_best:
+                current_metric_sum = cls1_avg_metric[0] + cls2_avg_metric[0]
 
+                if current_metric_sum >= best_metric_sum:
+                    
+                    best_metric_sum = current_metric_sum
                     cls1_best = cls1_avg_metric[0]
                     cls2_best = cls2_avg_metric[0]
 
@@ -189,16 +193,6 @@ if __name__ == "__main__":
                 avg_cls1.append(cls1_avg_metric[0])
                 avg_cls2.append(cls2_avg_metric[0])
 
-                fig, ax = plt.subplots(figsize=(8,5))
-                ax.plot(avg_x, avg_cls1, label='cls1')
-                ax.plot(avg_x, avg_cls2, label='cls2')
-                ax.set_xticks([])
-                ax.set_yticks([])
-                plt.savefig(fig_path/'cls_dif.png')
-                plt.close()
-
-                writer.add_scalar('val/cls1_dice', cls1_avg_metric[0], iter_num)
-                writer.add_scalar('val/cls2_dice', cls2_avg_metric[0], iter_num)
                 logging.info(f'cls1_avg_metric: dice={cls1_avg_metric[0]:.4f},  cls2_avg_metric: dice={cls2_avg_metric[0]:.4f}')
                 logging.info(f'cls1_best={cls1_best:.4f},  cls2_best={cls2_best:.4f}')
 
