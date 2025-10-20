@@ -104,4 +104,4 @@ def ce_dice_loss(pred, label, ce_weights):
     dc_loss = 0.5*dice_loss(pred_soft[:, 1, :, :, :], label == 1) + \
                 dice_loss(pred_soft[:, 2, :, :, :], label == 2)
     
-    return ce_loss + dc_loss
+    return 0.5 * ( ce_loss +  dc_loss )

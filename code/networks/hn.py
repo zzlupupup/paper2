@@ -55,6 +55,56 @@ class CrossAtten(nn.Module):
         return de
 
 
+class CrossAtten1(nn.Module):
+    def __init__(self, patch_size=[4, 4, 4], fea_dim=128, num_heads=8, dropout=0.1):
+        super().__init__()
+
+        self.Q_norm = nn.LayerNorm(fea_dim)
+        self.K_norm = nn.LayerNorm(fea_dim)
+        self.ff_norm = nn.LayerNorm(fea_dim)
+
+        self.ffn = nn.Sequential(
+            nn.Linear(fea_dim, fea_dim // 4),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(fea_dim // 4, fea_dim),
+            nn.Dropout(dropout)
+        )
+
+        self.MHA = nn.MultiheadAttention(
+            embed_dim=fea_dim,
+            num_heads=num_heads,
+            batch_first=True,
+            dropout=dropout
+        )
+
+        self.decoder = nn.Sequential(
+            nn.Upsample(scale_factor=patch_size[0], mode='trilinear'),
+            nn.Conv3d(fea_dim, fea_dim // 2, kernel_size=3, padding=1),
+            nn.BatchNorm3d(fea_dim // 2),
+            nn.ReLU(inplace=True),
+            nn.Conv3d(fea_dim // 2, fea_dim // 4, kernel_size=3, padding=1),
+            nn.BatchNorm3d(fea_dim // 4),
+            nn.ReLU(inplace=True),
+        )
+    
+    def forward(self, Q_emded, context):
+
+        Q_norm = self.Q_norm(Q_emded)
+        K_norm = self.K_norm(context)
+        V = context
+
+        MHA, _ = self.MHA(Q_norm, K_norm, V, need_weights=False)
+        tokens = MHA + self.ffn(self.ff_norm(MHA))
+        
+        B, N, C = tokens.shape
+        patch_dim = round(N ** (1/3)) 
+        tokens = tokens.permute(0, 2, 1).contiguous().view(B, C, patch_dim, patch_dim, patch_dim)
+        de = self.decoder(tokens)
+
+        return de
+
+
 class Fusion(nn.Module):
     
     def __init__(self, img_size=[64, 64, 64], patch_size=[4, 4, 4], fea_dim=128, num_heads=8, chan=3):
@@ -97,7 +147,52 @@ class Fusion(nn.Module):
         cat = torch.cat([pred_l, cross_atten_l, pred_r, cross_atten_r], dim=1)
         pred_fusion = self.out(cat)
 
-        return pred_fusion    
+        return pred_fusion  
+
+
+class Fusion1(nn.Module):
+    
+    def __init__(self, img_size=[64, 64, 64], patch_size=[4, 4, 4], fea_dim=128, num_heads=8, chan=3):
+        super().__init__()
+
+        self.patch_embed = PatchEmbeddingBlock(
+            in_channels=chan,
+            img_size=img_size,
+            patch_size=patch_size,
+            hidden_size=fea_dim,
+            num_heads=num_heads
+        )
+
+        self.cross_atten1 = CrossAtten1(
+            patch_size=patch_size,
+            fea_dim=fea_dim,
+            num_heads=num_heads,
+            dropout=0.1
+        )
+
+        out_dim = (fea_dim // 2 )
+        self.out = nn.Sequential(
+            nn.Conv3d(out_dim, out_dim // 2, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm3d(out_dim // 2),
+            nn.ReLU(inplace=True),
+            nn.Conv3d(out_dim // 2, out_dim // 4, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm3d(out_dim // 4),
+            nn.ReLU(inplace=True),
+            nn.Conv3d(out_dim // 4, chan, kernel_size=1)
+        )
+
+    def forward(self, pred_l, pred_r):
+
+        embed_l = self.patch_embed(pred_l)
+        embed_r = self.patch_embed(pred_r)
+        
+        cross_atten_l = self.cross_atten1(embed_l, embed_r)
+        cross_atten_r = self.cross_atten1(embed_r, embed_l)
+
+        cat = torch.cat([cross_atten_l, cross_atten_r], dim=1)
+        pred_fusion = self.out(cat)
+
+        return pred_fusion   
 
 class HN(nn.Module):
 
@@ -116,7 +211,7 @@ class HN(nn.Module):
             out_channels=out_chan
         )
 
-        self.fusion = Fusion(
+        self.fusion1 = Fusion1(
             img_size=img_size,
             patch_size=fusion_patch_size,
             fea_dim=fusion_dim,
@@ -129,7 +224,7 @@ class HN(nn.Module):
         
         pred_l = self.model_l(x)
         pred_r = self.model_r(x)
-        pred_fusion = self.fusion(pred_l, pred_r)
+        pred_fusion = self.fusion1(pred_l, pred_r)
 
         return pred_fusion, pred_l, pred_r
     
