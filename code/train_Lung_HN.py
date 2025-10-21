@@ -19,12 +19,12 @@ from tensorboardX import SummaryWriter
 from networks.hn import HN
 from utils import ramps, losses
 from dataloaders.lung import Lung, TwoStreamBatchSampler
-from utils.test_3d_patch import test_all_case_Lung_plus
+from utils.test_3d_patch import test_all_case_Lung_plus, test_all_case_Lung_HN
 from utils.data_util import get_transform
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--root_path', type=str, default='../data/LUNG', help='Name of Experiment')
-parser.add_argument('--exp', type=str,  default='HN_Fusion', help='model_name')
+parser.add_argument('--exp', type=str,  default='HN', help='model_name')
 parser.add_argument('--max_iterations', type=int,  default=6000, help='maximum epoch number to train')
 parser.add_argument('--batch_size', type=int, default=4, help='batch_size per gpu')
 parser.add_argument('--labeled_bs', type=int, default=2, help='labeled_batch_size per gpu')
@@ -33,6 +33,7 @@ parser.add_argument('--deterministic', type=int,  default=1, help='whether use d
 parser.add_argument('--seed', type=int,  default=1337, help='random seed')
 parser.add_argument('--gpu', type=str,  default='0', help='GPU to use')
 ### costs
+parser.add_argument('--fusion_type', type=str,  default='HN', choices=['BASE', 'LINER', 'HN'], help='fusion_type')
 parser.add_argument('--unsup_weight', type=float,  default=1.0, help='unsup_weight')
 parser.add_argument('--unsup_rampup', type=float,  default=40.0, help='unsup_rampup')
 args = parser.parse_args()
@@ -46,6 +47,9 @@ max_iterations = args.max_iterations
 labeled_bs = args.labeled_bs
 
 lr = args.lr
+fusion_type = args.fusion_type
+
+assert fusion_type in ['BASE', 'LINER', 'HN'], f"Invalid fusion_type: {fusion_type}"
 
 if args.deterministic:
     cudnn.benchmark = False
@@ -94,7 +98,7 @@ if __name__ == "__main__":
 
     trainloader = DataLoader(db_train, batch_sampler=batch_sampler, num_workers=14, pin_memory=True,worker_init_fn=worker_init_fn)
 
-    net = HN().cuda()
+    net = HN(fusion_type=fusion_type).cuda()
     net.train()
     optimizer = optim.AdamW(net.parameters(), lr=lr, weight_decay=0.00001)
 
@@ -119,14 +123,23 @@ if __name__ == "__main__":
             volume_batch, label_batch = volume_batch.cuda(), label_batch.cuda()
             #sup_loss
             pred_fusion, pred_l, pred_r = net(volume_batch)
-            sup_loss_fusion = losses.ce_dice_loss(pred_fusion[:labeled_bs], label_batch[:labeled_bs], ce_weights)
             sup_loss_l = losses.ce_dice_loss(pred_l[:labeled_bs], label_batch[:labeled_bs], ce_weights)
             sup_loss_r = losses.ce_dice_loss(pred_r[:labeled_bs], label_batch[:labeled_bs], ce_weights)
+            if fusion_type == 'HN':
+                sup_loss_fusion = losses.ce_dice_loss(pred_fusion[:labeled_bs], label_batch[:labeled_bs], ce_weights)
+            else:
+                sup_loss_fusion = torch.tensor(0).cuda()
+
             sup_loss = 0.2 * sup_loss_fusion+ 0.4 * (sup_loss_l + sup_loss_r)
 
             #unsup_loss MSE
-            unsup_loss_l = torch.mean(losses.softmax_mse_loss(pred_l[labeled_bs:], pred_fusion[labeled_bs:]))
-            unsup_loss_r = torch.mean(losses.softmax_mse_loss(pred_r[labeled_bs:], pred_fusion[labeled_bs:]))
+            if fusion_type == 'HN' or fusion_type == 'LINER':
+                unsup_loss_l = torch.mean(losses.softmax_mse_loss(pred_l[labeled_bs:], pred_fusion[labeled_bs:]))
+                unsup_loss_r = torch.mean(losses.softmax_mse_loss(pred_r[labeled_bs:], pred_fusion[labeled_bs:]))
+            else:
+                unsup_loss_l = torch.mean(losses.softmax_mse_loss(pred_l[labeled_bs:], pred_r[labeled_bs:]))
+                unsup_loss_r = torch.mean(losses.softmax_mse_loss(pred_r[labeled_bs:], pred_l[labeled_bs:]))
+
             unsup_loss = unsup_loss_l + unsup_loss_r
             
             #all_loss 
@@ -138,44 +151,50 @@ if __name__ == "__main__":
             optimizer.step()
 
             iter_num = iter_num + 1
-            logging.info(f'iteration{iter_num}: loss={loss.item():.4f}, sup_loss={sup_loss.item():.4f}, unsup_loss_l={unsup_loss_l.item():.4f}, unsup_loss_r={unsup_loss_r.item():.4f}, unsup_loss={unsup_loss.item():.4f}, unsup_weight={unsup_weight:.4f}')
+            logging.info(f'iter{iter_num}:loss={loss.item():.4f} || sup_loss={sup_loss.item():.4f}, sup_loss_fusion={sup_loss_fusion.item():.4f}, sup_loss_l={sup_loss_l.item():.4f}, sup_loss_r={sup_loss_r.item():.4f} || unsup_loss={unsup_loss.item():.4f}, unsup_loss_l={unsup_loss_l.item():.4f}, unsup_loss_r={unsup_loss_r.item():.4f}, unsup_weight={unsup_weight:.4f}')
             if iter_num % 100 == 0:
-
-                label_img = volume_batch[0, 0, :, :, 32].detach().cpu().numpy()
-                label_label = label_batch[0, :, :, 32].detach().cpu().numpy()
-                label_pred_l = torch.argmax(torch.softmax(pred_l[0, :, :, :, 32], dim=0), dim=0).detach().cpu().numpy()
-                label_pred_r = torch.argmax(torch.softmax(pred_r[0, :, :, :, 32], dim=0), dim=0).detach().cpu().numpy()
-                label_pred_fusion = torch.argmax(torch.softmax(pred_fusion[0, :, :, :, 32], dim=0), dim=0).detach().cpu().numpy()
                 
-                unlabel_img = volume_batch[labeled_bs, 0, :, :, 32].detach().cpu().numpy()
-                unlabel_pred_l = torch.argmax(torch.softmax(pred_l[labeled_bs, :, :, :, 32], dim=0), dim=0).detach().cpu().numpy()
-                unlabel_pred_r = torch.argmax(torch.softmax(pred_r[labeled_bs, :, :, :, 32], dim=0), dim=0).detach().cpu().numpy()
-                unlabel_pred_fusion = torch.argmax(torch.softmax(pred_fusion[labeled_bs, :, :, :, 32], dim=0), dim=0).detach().cpu().numpy()
+                if fusion_type == 'LINER' or fusion_type == 'HN':
+                    label_img = volume_batch[0, 0, :, :, 32].detach().cpu().numpy()
+                    label_label = label_batch[0, :, :, 32].detach().cpu().numpy()
+                    label_pred_l = torch.argmax(torch.softmax(pred_l[0, :, :, :, 32], dim=0), dim=0).detach().cpu().numpy()
+                    label_pred_r = torch.argmax(torch.softmax(pred_r[0, :, :, :, 32], dim=0), dim=0).detach().cpu().numpy()
+                    label_pred_fusion = torch.argmax(torch.softmax(pred_fusion[0, :, :, :, 32], dim=0), dim=0).detach().cpu().numpy()
+                    
+                    unlabel_img = volume_batch[labeled_bs, 0, :, :, 32].detach().cpu().numpy()
+                    unlabel_pred_l = torch.argmax(torch.softmax(pred_l[labeled_bs, :, :, :, 32], dim=0), dim=0).detach().cpu().numpy()
+                    unlabel_pred_r = torch.argmax(torch.softmax(pred_r[labeled_bs, :, :, :, 32], dim=0), dim=0).detach().cpu().numpy()
+                    unlabel_pred_fusion = torch.argmax(torch.softmax(pred_fusion[labeled_bs, :, :, :, 32], dim=0), dim=0).detach().cpu().numpy()
 
-                fig, axes = plt.subplots(2, 5, figsize=(12, 8))
-                axes[0,0].imshow(label_img, cmap='gray')
-                axes[0,1].imshow(label_pred_l, cmap='gray')
-                axes[0,2].imshow(label_pred_r, cmap='gray')
-                axes[0,3].imshow(label_pred_fusion, cmap='gray')
-                axes[0,4].imshow(label_label, cmap='gray')
+                    fig, axes = plt.subplots(2, 5, figsize=(12, 8))
+                    axes[0,0].imshow(label_img, cmap='gray')
+                    axes[0,1].imshow(label_pred_l, cmap='gray')
+                    axes[0,2].imshow(label_pred_r, cmap='gray')
+                    axes[0,3].imshow(label_pred_fusion, cmap='gray')
+                    axes[0,4].imshow(label_label, cmap='gray')
 
-                axes[1,0].imshow(unlabel_img, cmap='gray')
-                axes[1,1].imshow(unlabel_pred_l, cmap='gray')
-                axes[1,2].imshow(unlabel_pred_r, cmap='gray')
-                axes[1,3].imshow(unlabel_pred_fusion, cmap='gray')
-                axes[1,4].imshow(unlabel_pred_fusion, cmap='gray')
+                    axes[1,0].imshow(unlabel_img, cmap='gray')
+                    axes[1,1].imshow(unlabel_pred_l, cmap='gray')
+                    axes[1,2].imshow(unlabel_pred_r, cmap='gray')
+                    axes[1,3].imshow(unlabel_pred_fusion, cmap='gray')
+                    axes[1,4].imshow(unlabel_pred_fusion, cmap='gray')
 
-                for ax in axes.ravel():
-                    ax.set_axis_off()
-                fig.tight_layout(pad=1)
-                fig.savefig(fig_path / (f'train{iter_num}.png'))
-                plt.close()
+                    for ax in axes.ravel():
+                        ax.set_axis_off()
+                    fig.tight_layout(pad=1)
+                    fig.savefig(fig_path / (f'train{iter_num}.png'))
+                    plt.close()
 
-            if iter_num % 200 == 0:
+            if iter_num % 400 == 0:
                 logging.info("start validation")
                 net.eval()
                 with torch.no_grad():
-                    cls1_avg_metric, cls2_avg_metric = test_all_case_Lung_plus(net, test_image_list, metric_detail=1)
+                    
+                    if fusion_type == 'HN':
+                        cls1_avg_metric, cls2_avg_metric = test_all_case_Lung_HN(net, test_image_list, metric_detail=1)
+                    elif fusion_type == 'BASE' or fusion_type == 'LINER':
+                        cls1_avg_metric, cls2_avg_metric = test_all_case_Lung_plus(net, test_image_list, metric_detail=1)
+
 
                 current_metric_sum = cls1_avg_metric[0] + cls2_avg_metric[0]
 
@@ -210,7 +229,7 @@ if __name__ == "__main__":
         if iter_num >= max_iterations:
             break
 
-    save_mode_path = os.path.join(snapshot_path, 'iter_'+str(max_iterations)+'_l.pth')
+    save_mode_path = os.path.join(snapshot_path, 'iter_'+str(max_iterations)+'.pth')
     torch.save(net.state_dict(), save_mode_path)
 
     with open(snapshot_path + '/dif.pkl', 'wb') as f:

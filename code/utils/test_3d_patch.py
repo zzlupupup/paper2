@@ -79,7 +79,7 @@ def test_single_case(net, image, stride_xy, stride_z, patch_size, num_classes=3)
         score_map = score_map[:,wl_pad:wl_pad+w,hl_pad:hl_pad+h,dl_pad:dl_pad+d]
     return label_map, score_map
 
-def test_single_case_plus(model, image, stride_xy, stride_z, patch_size, num_classes=3):
+def test_single_case_HN(model, image, stride_xy, stride_z, patch_size, num_classes=3):
     w, h, d = image.shape
     add_pad = False
     if w < patch_size[0]:
@@ -123,6 +123,66 @@ def test_single_case_plus(model, image, stride_xy, stride_z, patch_size, num_cla
 
                 with torch.no_grad():
                     y,_,_ = model(test_patch)
+                    y = F.softmax(y, dim=1)
+
+                y = y.cpu().data.numpy()
+                y = y[0,:,:,:,:]
+                score_map[:, xs:xs+patch_size[0], ys:ys+patch_size[1], zs:zs+patch_size[2]] \
+                  = score_map[:, xs:xs+patch_size[0], ys:ys+patch_size[1], zs:zs+patch_size[2]] + y
+                cnt[xs:xs+patch_size[0], ys:ys+patch_size[1], zs:zs+patch_size[2]] \
+                  = cnt[xs:xs+patch_size[0], ys:ys+patch_size[1], zs:zs+patch_size[2]] + 1
+    score_map = score_map/np.expand_dims(cnt,axis=0)
+    label_map = np.argmax(score_map, axis = 0)
+    if add_pad:
+        label_map = label_map[wl_pad:wl_pad+w,hl_pad:hl_pad+h,dl_pad:dl_pad+d]
+        score_map = score_map[:,wl_pad:wl_pad+w,hl_pad:hl_pad+h,dl_pad:dl_pad+d]
+    return label_map, score_map
+
+def test_single_case_plus(model, image, stride_xy, stride_z, patch_size, num_classes=3):
+    w, h, d = image.shape
+    add_pad = False
+    if w < patch_size[0]:
+        w_pad = patch_size[0]-w
+        add_pad = True
+    else:
+        w_pad = 0
+    if h < patch_size[1]:
+        h_pad = patch_size[1]-h
+        add_pad = True
+    else:
+        h_pad = 0
+    if d < patch_size[2]:
+        d_pad = patch_size[2]-d
+        add_pad = True
+    else:
+        d_pad = 0
+    wl_pad, wr_pad = w_pad//2,w_pad-w_pad//2
+    hl_pad, hr_pad = h_pad//2,h_pad-h_pad//2
+    dl_pad, dr_pad = d_pad//2,d_pad-d_pad//2
+    if add_pad:
+        image = np.pad(image, [(wl_pad,wr_pad),(hl_pad,hr_pad), (dl_pad, dr_pad)], mode='constant', constant_values=0)
+    ww,hh,dd = image.shape
+
+    sx = math.ceil((ww - patch_size[0]) / stride_xy) + 1
+    sy = math.ceil((hh - patch_size[1]) / stride_xy) + 1
+    sz = math.ceil((dd - patch_size[2]) / stride_z) + 1
+    # print("{}, {}, {}".format(sx, sy, sz))
+    score_map = np.zeros((num_classes, ) + image.shape).astype(np.float32)
+    cnt = np.zeros(image.shape).astype(np.float32)
+
+    for x in range(0, sx):
+        xs = min(stride_xy*x, ww-patch_size[0])
+        for y in range(0, sy):
+            ys = min(stride_xy * y,hh-patch_size[1])
+            for z in range(0, sz):
+                zs = min(stride_z * z, dd-patch_size[2])
+                test_patch = image[xs:xs+patch_size[0], ys:ys+patch_size[1], zs:zs+patch_size[2]]
+                test_patch = np.expand_dims(np.expand_dims(test_patch,axis=0),axis=0).astype(np.float32)
+                test_patch = torch.from_numpy(test_patch).cuda()
+
+                with torch.no_grad():
+                    _, l, r = model(test_patch)
+                    y = (l + r) / 2
                     y = F.softmax(y, dim=1)
 
                 y = y.cpu().data.numpy()
@@ -190,6 +250,75 @@ def test_all_case_Lung(model, image_list, num_classes=3, patch_size=(64, 64, 64)
 
         infer_time_start = time.time()
         prediction, score_map = test_single_case(model, image, stride_xy, stride_z, patch_size, num_classes=num_classes)
+        infer_time_end = time.time()
+
+        if nms:
+            prediction = getLargestCC(prediction)
+
+        metric_time_start = time.time()     
+        results = calculate_metric_percase_multiclass(prediction, label, num_classes)
+        metric_time_end = time.time()
+
+        cls1 = results[1]
+        cls2 = results[2]
+
+        if metric_detail:
+            print(f"{imageName}: cls1_dice={cls1[0]:.4f},  cls2_dice={cls2[0]:.4f}, infer_time={infer_time_end - infer_time_start:.2f}s, metric_time={metric_time_end - metric_time_start:.2f}s")
+
+        cls1_total_metric += np.asarray(cls1)
+        cls2_total_metric += np.asarray(cls2)
+
+        if save_result:
+            nib.save(nib.Nifti1Image(prediction.astype(np.float32), np.eye(4)), test_save_path +  "%02d_pred.nii.gz" % ith)
+            nib.save(nib.Nifti1Image(image[:].astype(np.float32), np.eye(4)), test_save_path + "%02d_img.nii.gz" % ith)
+            nib.save(nib.Nifti1Image(label[:].astype(np.float32), np.eye(4)), test_save_path + "%02d_gt.nii.gz" % ith)
+        ith += 1
+
+    cls1_avg_metric = cls1_total_metric / len(image_list)
+    cls2_avg_metric = cls2_total_metric / len(image_list)
+
+    if metric_txt_save:
+        print('Final Results:')
+        print(f'cls1 average metric is {cls1_avg_metric}')
+        print(f'cls2 average metric is {cls2_avg_metric}')
+        with open(test_save_path/'performance.txt', 'w') as f:
+            f.writelines(f'cls1 average metric is {cls1_avg_metric} \n')
+            f.writelines(f'cls2 average metric is {cls2_avg_metric} \n')
+
+    return cls1_avg_metric, cls2_avg_metric
+
+def test_all_case_Lung_HN(model, image_list, num_classes=3, patch_size=(64, 64, 64), stride_xy=32, stride_z=32, save_result=False, test_save_path=None, preproc_fn=None, metric_detail=1, nms=0, metric_txt_save=0):
+    imagLoader = Compose([
+        LoadImaged(keys=['image', 'label'], ensure_channel_first=True),
+        Orientationd(keys=["image", "label"], axcodes="RAS", labels=(('L', 'R'), ('P', 'A'), ('I', 'S'))),
+        ScaleIntensityRanged(
+                keys=["image"], a_min=-1, a_max=10, b_min=0, b_max=1, clip=True
+            ),
+        CropForegroundd(
+                keys=["image", "label"],
+                source_key="label",
+                margin=5
+            ),
+        ToTensord(keys=['image', 'label'], track_meta=False)
+    ])
+    ith = 0
+    cls1_total_metric = 0.0
+    cls2_total_metric = 0.0
+
+    for image_path in image_list:
+        imageName = image_path.name
+        sample = {
+            "image": image_path/(imageName + ".nii.gz"),
+            "label": image_path/(imageName + "_label.nii.gz")
+        }
+        sample = imagLoader(sample)
+        image = sample['image'].squeeze(0).numpy()
+        label = sample['label'].squeeze(0).numpy()
+        if preproc_fn is not None:
+            image = preproc_fn(image)
+
+        infer_time_start = time.time()
+        prediction, score_map = test_single_case_HN(model, image, stride_xy, stride_z, patch_size, num_classes=num_classes)
         infer_time_end = time.time()
 
         if nms:

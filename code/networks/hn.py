@@ -101,9 +101,11 @@ class Fusion(nn.Module):
 
 class HN(nn.Module):
 
-    def __init__(self, img_size=[64, 64, 64], in_chan=1, out_chan=3, fusion_patch_size=[4, 4, 4], fusion_dim=128, fusion_heads=8):
+    def __init__(self, img_size=[64, 64, 64], in_chan=1, out_chan=3, fusion_patch_size=[4, 4, 4], fusion_dim=128, fusion_heads=8, fusion_type=None):
         super().__init__()
         
+        self.type = fusion_type
+
         self.model_l = VNet(
             n_channels=in_chan, 
             n_classes=out_chan,
@@ -128,7 +130,19 @@ class HN(nn.Module):
         
         pred_l = self.model_l(x)
         pred_r = self.model_r(x)
-        pred_fusion = self.fusion(pred_l, pred_r)
+
+        if self.type == 'HN':
+
+            pred_fusion = self.fusion(pred_l, pred_r)
+
+        elif self.type == 'LINER':
+
+            pred_fusion = (pred_l + pred_r ) / 2
+        
+        elif self.type == 'BASE':
+
+            pred_fusion = None
+
 
         return pred_fusion, pred_l, pred_r
     
