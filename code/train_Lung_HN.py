@@ -124,7 +124,7 @@ if __name__ == "__main__":
 
             #pred
             if fusion_type == 'UNHN':
-                threshold = (0.75 + 0.25 * ramps.sigmoid_rampup(iter_num, max_iterations))
+                threshold = (0.75 + 0.25 * ramps.sigmoid_rampup(iter_num, max_iterations)) * np.log(3)
                 pred_fusion, pred_l, pred_r = net(volume_batch, threshold)
             else:
                 pred_fusion, pred_l, pred_r = net(volume_batch)
