@@ -1,5 +1,6 @@
 import torch
 from torch import nn
+from utils.unhn_util import get_uncertain_atten_mask
 from networks.vnet import VNet
 from monai.networks.nets import SwinUNETR
 from monai.networks.blocks import PatchEmbeddingBlock
@@ -31,19 +32,19 @@ class CrossAtten(nn.Module):
             nn.Upsample(scale_factor=patch_size[0], mode='trilinear'),
             nn.Conv3d(fea_dim, fea_dim // 2, kernel_size=3, padding=1),
             nn.BatchNorm3d(fea_dim // 2),
-            nn.ReLU(inplace=True),
+            nn.ReLU(),
             nn.Conv3d(fea_dim // 2, fea_dim // 4, kernel_size=3, padding=1),
             nn.BatchNorm3d(fea_dim // 4),
-            nn.ReLU(inplace=True),
+            nn.ReLU(),
         )
     
-    def forward(self, Q_emded, context):
+    def forward(self, Q_emded, context, key_mask):
 
         Q_norm = self.Q_norm(Q_emded)
         K_norm = self.K_norm(context)
         V = context
 
-        MHA, _ = self.MHA(Q_norm, K_norm, V, need_weights=False)
+        MHA, _ = self.MHA(Q_norm, K_norm, V, need_weights=False, key_padding_mask=key_mask)
         tokens = MHA + self.ffn(self.ff_norm(MHA))
         
         B, N, C = tokens.shape
@@ -78,20 +79,25 @@ class Fusion(nn.Module):
         self.out = nn.Sequential(
             nn.Conv3d(out_dim, out_dim // 2, kernel_size=3, padding=1, bias=False),
             nn.BatchNorm3d(out_dim // 2),
-            nn.ReLU(inplace=True),
+            nn.ReLU(),
             nn.Conv3d(out_dim // 2, out_dim // 4, kernel_size=3, padding=1, bias=False),
             nn.BatchNorm3d(out_dim // 4),
-            nn.ReLU(inplace=True),
+            nn.ReLU(),
             nn.Conv3d(out_dim // 4, chan, kernel_size=1)
         )
 
-    def forward(self, pred_l, pred_r):
+    def forward(self, pred_l, pred_r, un_threshold):
 
         embed_l = self.patch_embed(pred_l)
         embed_r = self.patch_embed(pred_r)
         
-        cross_atten_l = self.cross_atten(embed_l, embed_r)
-        cross_atten_r = self.cross_atten(embed_r, embed_l)
+        uncertain_l_seq, uncertain_r_seq = None, None
+        
+        if un_threshold:
+            uncertain_l_seq, uncertain_r_seq = get_uncertain_atten_mask(pred_l, pred_r, un_threshold)
+
+        cross_atten_l = self.cross_atten(embed_l, embed_r, uncertain_r_seq)
+        cross_atten_r = self.cross_atten(embed_r, embed_l, uncertain_l_seq)
 
         cat = torch.cat([cross_atten_l, cross_atten_r], dim=1)
         pred_fusion = self.out(cat)
@@ -126,14 +132,22 @@ class HN(nn.Module):
             chan=out_chan
         )
 
-    def forward(self,x):
+        self.fusion = Fusion(
+            img_size=img_size,
+            patch_size=fusion_patch_size,
+            fea_dim=fusion_dim,
+            num_heads=fusion_heads,
+            chan=out_chan
+        )
+
+    def forward(self, x, un_threshold=None):
         
         pred_l = self.model_l(x)
         pred_r = self.model_r(x)
 
-        if self.type == 'HN':
+        if 'HN' in self.type :
 
-            pred_fusion = self.fusion(pred_l, pred_r)
+            pred_fusion = self.fusion(pred_l, pred_r, un_threshold)
 
         elif self.type == 'LINER':
 

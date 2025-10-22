@@ -1,30 +1,16 @@
 import torch
+import numpy as np
 from torch import nn
+from utils.ramps import sigmoid_rampup
 import torch.nn.functional as F
+from utils import unhn_util
+from networks.hn import HN
 
-x = torch.tensor([
-    [[
-    [1, 2, 3, 4],
-    [5, 6, 7, 8],
-    [9, 10, 11, 12],
-    [13, 14, 15, 16]
-    ]],
-    [[
-    [1, 2, 3, 4],
-    [5, 6, 7, 8],
-    [9, 10, 11, 12],
-    [13, 14, 15, 16]
-    ]]
-])
-print(x.shape)
+pred = torch.rand(size=[2, 1, 64, 64, 64]).cuda()
 
-avg_x = F.avg_pool2d(x, kernel_size=2, stride=2)
-print(avg_x)
-print(avg_x.shape)
 
-B, C, P, _ = avg_x.shape
-L = P ** 2
-seq_x = avg_x.view(B, 1, L).expand(B, L, L).view(B, 1, L, L).expand(B, 2, L, L).contiguous().view(2 * B, L, L)
-print(seq_x)
-print(seq_x.shape)
+net = HN(fusion_type='UNHN').cuda()
+net(pred)
+
+
 

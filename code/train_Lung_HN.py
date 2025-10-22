@@ -24,7 +24,7 @@ from utils.data_util import get_transform
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--root_path', type=str, default='../data/LUNG', help='Name of Experiment')
-parser.add_argument('--exp', type=str,  default='HN', help='model_name')
+parser.add_argument('--exp', type=str,  default='UNHN', help='model_name')
 parser.add_argument('--max_iterations', type=int,  default=6000, help='maximum epoch number to train')
 parser.add_argument('--batch_size', type=int, default=4, help='batch_size per gpu')
 parser.add_argument('--labeled_bs', type=int, default=2, help='labeled_batch_size per gpu')
@@ -33,7 +33,7 @@ parser.add_argument('--deterministic', type=int,  default=1, help='whether use d
 parser.add_argument('--seed', type=int,  default=1337, help='random seed')
 parser.add_argument('--gpu', type=str,  default='0', help='GPU to use')
 ### costs
-parser.add_argument('--fusion_type', type=str,  default='HN', choices=['BASE', 'LINER', 'HN'], help='fusion_type')
+parser.add_argument('--fusion_type', type=str,  default='UNHN', choices=['BASE', 'LINER', 'HN', 'UNHN'], help='fusion_type')
 parser.add_argument('--unsup_weight', type=float,  default=1.0, help='unsup_weight')
 parser.add_argument('--unsup_rampup', type=float,  default=40.0, help='unsup_rampup')
 args = parser.parse_args()
@@ -49,7 +49,7 @@ labeled_bs = args.labeled_bs
 lr = args.lr
 fusion_type = args.fusion_type
 
-assert fusion_type in ['BASE', 'LINER', 'HN'], f"Invalid fusion_type: {fusion_type}"
+assert fusion_type in ['BASE', 'LINER', 'HN', 'UNHN'], f"Invalid fusion_type: {fusion_type}"
 
 if args.deterministic:
     cudnn.benchmark = False
@@ -121,11 +121,18 @@ if __name__ == "__main__":
         for i_batch, sampled_batch in enumerate(trainloader):
             volume_batch, label_batch = sampled_batch['image'], sampled_batch['label']
             volume_batch, label_batch = volume_batch.cuda(), label_batch.cuda()
+
+            #pred
+            if fusion_type == 'UNHN':
+                threshold = (0.75 + 0.25 * ramps.sigmoid_rampup(iter_num, max_iterations))
+                pred_fusion, pred_l, pred_r = net(volume_batch, threshold)
+            else:
+                pred_fusion, pred_l, pred_r = net(volume_batch)
+
             #sup_loss
-            pred_fusion, pred_l, pred_r = net(volume_batch)
             sup_loss_l = losses.ce_dice_loss(pred_l[:labeled_bs], label_batch[:labeled_bs], ce_weights)
             sup_loss_r = losses.ce_dice_loss(pred_r[:labeled_bs], label_batch[:labeled_bs], ce_weights)
-            if fusion_type == 'HN':
+            if 'HN' in fusion_type:
                 sup_loss_fusion = losses.ce_dice_loss(pred_fusion[:labeled_bs], label_batch[:labeled_bs], ce_weights)
             else:
                 sup_loss_fusion = torch.tensor(0).cuda()
@@ -133,7 +140,7 @@ if __name__ == "__main__":
             sup_loss = 0.2 * sup_loss_fusion+ 0.4 * (sup_loss_l + sup_loss_r)
 
             #unsup_loss MSE
-            if fusion_type == 'HN' or fusion_type == 'LINER':
+            if ('HN' in fusion_type) or fusion_type == 'LINER':
                 unsup_loss_l = torch.mean(losses.softmax_mse_loss(pred_l[labeled_bs:], pred_fusion[labeled_bs:]))
                 unsup_loss_r = torch.mean(losses.softmax_mse_loss(pred_r[labeled_bs:], pred_fusion[labeled_bs:]))
             else:
@@ -151,10 +158,10 @@ if __name__ == "__main__":
             optimizer.step()
 
             iter_num = iter_num + 1
-            logging.info(f'iter{iter_num}:loss={loss.item():.4f} || sup_loss={sup_loss.item():.4f}, sup_loss_fusion={sup_loss_fusion.item():.4f}, sup_loss_l={sup_loss_l.item():.4f}, sup_loss_r={sup_loss_r.item():.4f} || unsup_loss={unsup_loss.item():.4f}, unsup_loss_l={unsup_loss_l.item():.4f}, unsup_loss_r={unsup_loss_r.item():.4f}, unsup_weight={unsup_weight:.4f}')
+            logging.info(f'iter{iter_num}:loss={loss.item():.4f} || sup_loss={sup_loss.item():.4f}, sup_loss_fusion={sup_loss_fusion.item():.4f}, sup_loss_l={sup_loss_l.item():.4f}, sup_loss_r={sup_loss_r.item():.4f} || unsup_loss={unsup_loss.item():.4f}, unsup_loss_l={unsup_loss_l.item():.4f}, unsup_loss_r={unsup_loss_r.item():.4f}, unsup_weight={unsup_weight:.4f} || threshold={(threshold if threshold else 0):.4f}')
             if iter_num % 100 == 0:
                 
-                if fusion_type == 'LINER' or fusion_type == 'HN':
+                if fusion_type == 'LINER' or ('HN' in  fusion_type):
                     label_img = volume_batch[0, 0, :, :, 32].detach().cpu().numpy()
                     label_label = label_batch[0, :, :, 32].detach().cpu().numpy()
                     label_pred_l = torch.argmax(torch.softmax(pred_l[0, :, :, :, 32], dim=0), dim=0).detach().cpu().numpy()
@@ -190,7 +197,7 @@ if __name__ == "__main__":
                 net.eval()
                 with torch.no_grad():
                     
-                    if fusion_type == 'HN':
+                    if 'HN' in fusion_type:
                         cls1_avg_metric, cls2_avg_metric = test_all_case_Lung_HN(net, test_image_list, metric_detail=1)
                     elif fusion_type == 'BASE' or fusion_type == 'LINER':
                         cls1_avg_metric, cls2_avg_metric = test_all_case_Lung_plus(net, test_image_list, metric_detail=1)
